@@ -1,9 +1,6 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder } from "@babylonjs/core";
 
-const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-const engine = new Engine(canvas, true);
-
-const createScene = (): Scene => {
+function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
   const scene = new Scene(engine);
 
   const camera = new ArcRotateCamera(
@@ -32,7 +29,9 @@ const createScene = (): Scene => {
 };
 
 function main() {
-  const scene = createScene();
+  const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+  const engine = new Engine(canvas, true);
+  const scene = createScene(engine, canvas);
   engine.runRenderLoop(() => {
     scene.render();
   });
