@@ -1,10 +1,10 @@
-import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
-import { SpringSim } from "./simulation";
+import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh, StandardMaterial, Color3 } from "@babylonjs/core";
+import { Solver, createCloth } from "./simulation";
 
 function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const scene = new Scene(engine);
 
-    const camera = new ArcRotateCamera("camera", Math.PI / 2, Math.PI / 4, 20, Vector3.Zero(), scene);
+    const camera = new ArcRotateCamera("camera", Math.PI / 2, Math.PI / 4, 10, new Vector3(0, 1, 0), scene);
     camera.attachControl(canvas, true);
 
     const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
@@ -13,30 +13,30 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
 
     const fpsDisplay = document.getElementById("fpsDisplay");
 
+    // Create cloth simulation
+    const cloth = createCloth(4, 3, 8, 6); // width=4, height=3, segmentsX=8, segmentsY=6
+    const solver = new Solver(cloth);
 
-    const pos: Vector3[] = [];
-    for (let i = 0; i < 10; i++) {
-        pos.push(new Vector3(i, 5, 0));
-    }
-    const mass: number[] = pos.map(() => 1);
-    const stiffness = 100;
-    const springSim = new SpringSim(pos, mass, stiffness);
-
-    const sphereSize = 1.0;
+    // Create spheres to visualize cloth nodes
+    const sphereSize = 0.1;
     const spheres: Mesh[] = [];
-    for (let i = 0; i < pos.length; i++) {
+    const material = new StandardMaterial("sphereMaterial", scene);
+    material.diffuseColor = new Color3(0.0, 0.0, 0.0);
+    
+    for (let i = 0; i < cloth.nodes.length; i++) {
         const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
-        sphere.position = pos[i].clone();
+        sphere.position = cloth.nodes[i].position.clone();
+        sphere.material = material;
         spheres.push(sphere);
     }
 
     scene.registerBeforeRender(() => {
         const deltaTime = engine.getDeltaTime() / 1000;
 
-        springSim.update(deltaTime);
+        solver.step(deltaTime);
 
         for (let i = 0; i < spheres.length; i++) {
-            spheres[i].position.copyFrom(springSim.springPos[i]);
+            spheres[i].position.copyFrom(solver.positions[i]);
         }
 
         if (fpsDisplay) {
