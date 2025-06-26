@@ -12,12 +12,12 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
 
     const fpsDisplay = document.getElementById("fpsDisplay");
 
-    // const geometry = createChain(10, 100); // 10 vertices, stiffness=100
-    const geometry = createCloth(6, 6, 8, 8, 100); // 6x6 world units, 8x8 resolution, stiffness=100
+    // const geometry = createChain(10, 100);
+    const geometry = createCloth(6, 6, 8, 8, 1000);
     const solver = new ImplicitSolver(geometry);
 
     // Create spheres to visualize nodes
-    const sphereSize = 0.15; // Smaller spheres for cloth
+    const sphereSize = 0.1;
     const spheres: Mesh[] = [];
     
     for (let i = 0; i < geometry.getNumVertices(); i++) {

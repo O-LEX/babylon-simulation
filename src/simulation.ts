@@ -269,7 +269,7 @@ export class ImplicitSolver {
     private bsm: BlockSparseMatrix;
     private velocities: Vector3[];
     private mass: number = 1.0;
-    private gravity: Vector3 = new Vector3(0, -1.0, 0);
+    private gravity: Vector3 = new Vector3(0, -10.0, 0);
 
     constructor(geometry: Geometry) {
         this.geometry = geometry;
