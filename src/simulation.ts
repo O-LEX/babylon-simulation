@@ -226,13 +226,15 @@ export class Geometry {
     edges: number[]; // [v0, v1, v2, v3, ...] pairs
     fixedVertices: Set<number>;
     stiffness: number; // Material property
+    vertexMass: number; // Mass per vertex
 
-    constructor(positions: Vector3[], edges: number[], stiffness: number = 100) {
+    constructor(positions: Vector3[], edges: number[], stiffness: number = 100, vertexMass: number = 1.0) {
         this.positions = positions.map(p => p.clone());
         this.initialPositions = positions.map(p => p.clone());
         this.edges = [...edges];
         this.fixedVertices = new Set();
         this.stiffness = stiffness;
+        this.vertexMass = vertexMass;
     }
 
     setFixedVertex(vertexIndex: number): void {
@@ -268,12 +270,13 @@ export class ImplicitSolver {
     private geometry: Geometry;
     private bsm: BlockSparseMatrix;
     private velocities: Vector3[];
-    private mass: number = 1.0;
+    private vertexMass: number; // Mass per vertex
     private gravity: Vector3 = new Vector3(0, -10.0, 0);
 
     constructor(geometry: Geometry) {
         this.geometry = geometry;
         this.bsm = new BlockSparseMatrix();
+        this.vertexMass = geometry.vertexMass; // Store vertex mass from geometry
         
         // Create sparse matrix structure
         const structure = this.createSparseMatrixStructure(geometry);
@@ -356,17 +359,16 @@ export class ImplicitSolver {
             this.bsm.addBlockAt(v1, v0, result.hessian[1][0]);
             this.bsm.addBlockAt(v1, v1, result.hessian[1][1]);
         }
-        
-        // Step 3: Add mass matrix (mass_point / (timeStep * timeStep))
-        const massMatrix = Matrix3x3.identity().scale(this.mass / (deltaTime * deltaTime));
+         // Step 3: Add mass matrix (mass_point / (timeStep * timeStep))
+        const massMatrix = Matrix3x3.identity().scale(this.vertexMass / (deltaTime * deltaTime));
         for (let i = 0; i < numVertices; i++) {
             this.bsm.addBlockAt(i, i, massMatrix);
         }
-        
+
         // Step 4: Add gravity forces
         for (let i = 0; i < numVertices; i++) {
-            gradient[i].subtractInPlace(this.gravity.scale(this.mass));
-            totalEnergy -= this.mass * Vector3.Dot(this.gravity, this.geometry.positions[i]);
+            gradient[i].subtractInPlace(this.gravity.scale(this.vertexMass));
+            totalEnergy -= this.vertexMass * Vector3.Dot(this.gravity, this.geometry.positions[i]);
         }
         
         // Step 5: Handle fixed vertices
@@ -394,7 +396,7 @@ export class ImplicitSolver {
 }
 
 // Utility function to create a chain of springs
-export function createChain(numVertices: number, stiffness: number = 100): Geometry {
+export function createChain(numVertices: number, stiffness: number = 100, vertexMass: number = 1.0): Geometry {
     const positions = [];
     const edges = [];
     
@@ -407,14 +409,14 @@ export function createChain(numVertices: number, stiffness: number = 100): Geome
         edges.push(i, i + 1);
     }
     
-    const geometry = new Geometry(positions, edges, stiffness);
+    const geometry = new Geometry(positions, edges, stiffness, vertexMass);
     geometry.setFixedVertex(0); // Fix first vertex (left end of chain)
     
     return geometry;
 }
 
 // Utility function to create a cloth (2D grid of springs)
-export function createCloth(width: number, height: number, resolutionX: number, resolutionY: number, stiffness: number = 100): Geometry {
+export function createCloth(width: number, height: number, resolutionX: number, resolutionY: number, stiffness: number = 100, vertexMass: number = 1.0): Geometry {
     const positions = [];
     const edges = [];
     
@@ -461,7 +463,7 @@ export function createCloth(width: number, height: number, resolutionX: number, 
         }
     }
     
-    const geometry = new Geometry(positions, edges, stiffness);
+    const geometry = new Geometry(positions, edges, stiffness, vertexMass);
     
     // Fix the top corners of the cloth
     geometry.setFixedVertex(0);  // Top-left corner

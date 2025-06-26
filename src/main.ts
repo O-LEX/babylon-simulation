@@ -13,7 +13,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const fpsDisplay = document.getElementById("fpsDisplay");
 
     // const geometry = createChain(10, 100);
-    const geometry = createCloth(6, 6, 8, 8, 1000);
+    const geometry = createCloth(6, 6, 20, 20, 2000, 0.25);
     const solver = new ImplicitSolver(geometry);
 
     // Create spheres to visualize nodes
