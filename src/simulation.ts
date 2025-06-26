@@ -1,169 +1,472 @@
 import { Vector3 } from "@babylonjs/core";
 
-class Node {
-    position: Vector3;
-    velocity: Vector3;
-    mass: number;
-    isFixed: boolean;
+// 3x3 matrix for block operations
+class Matrix3x3 {
+    data: number[] = new Array(9).fill(0);
 
-    constructor(position: Vector3, mass: number, isFixed: boolean = false) {
-        this.position = position.clone();
-        this.velocity = new Vector3(0, 0, 0);
-        this.mass = mass;
-        this.isFixed = isFixed;
+    constructor(values?: number[]) {
+        if (values) {
+            this.data = [...values];
+        }
+    }
+
+    static identity(): Matrix3x3 {
+        const m = new Matrix3x3();
+        m.data[0] = m.data[4] = m.data[8] = 1;
+        return m;
+    }
+
+    static outerProduct(a: Vector3, b: Vector3): Matrix3x3 {
+        const m = new Matrix3x3();
+        m.data[0] = a.x * b.x; m.data[1] = a.x * b.y; m.data[2] = a.x * b.z;
+        m.data[3] = a.y * b.x; m.data[4] = a.y * b.y; m.data[5] = a.y * b.z;
+        m.data[6] = a.z * b.x; m.data[7] = a.z * b.y; m.data[8] = a.z * b.z;
+        return m;
+    }
+
+    add(other: Matrix3x3): Matrix3x3 {
+        const result = new Matrix3x3();
+        for (let i = 0; i < 9; i++) {
+            result.data[i] = this.data[i] + other.data[i];
+        }
+        return result;
+    }
+
+    subtract(other: Matrix3x3): Matrix3x3 {
+        const result = new Matrix3x3();
+        for (let i = 0; i < 9; i++) {
+            result.data[i] = this.data[i] - other.data[i];
+        }
+        return result;
+    }
+
+    scale(s: number): Matrix3x3 {
+        const result = new Matrix3x3();
+        for (let i = 0; i < 9; i++) {
+            result.data[i] = this.data[i] * s;
+        }
+        return result;
+    }
+
+    multiplyVector(v: Vector3): Vector3 {
+        return new Vector3(
+            this.data[0] * v.x + this.data[1] * v.y + this.data[2] * v.z,
+            this.data[3] * v.x + this.data[4] * v.y + this.data[5] * v.z,
+            this.data[6] * v.x + this.data[7] * v.y + this.data[8] * v.z
+        );
     }
 }
 
-class Spring {
-    node0: Node;
-    node1: Node;
-    restLength: number;
-    stiffness: number;
+// Block sparse matrix using CSR format
+class BlockSparseMatrix {
+    private row2idx: number[] = [];
+    private idx2col: number[] = [];
+    private idx2val: Matrix3x3[] = [];
+    private numVertices: number = 0;
+    
+    // Working arrays for CG solver
+    private p: Vector3[] = [];
+    private Ap: Vector3[] = [];
 
-    constructor(node0: Node, node1: Node, stiffness: number) {
-        this.node0 = node0;
-        this.node1 = node1;
-        this.restLength = Vector3.Distance(node0.position, node1.position);
+    initialize(row2col: number[], idx2col: number[]): void {
+        this.row2idx = [...row2col];
+        this.idx2col = [...idx2col];
+        this.idx2val = new Array(idx2col.length).fill(null).map(() => new Matrix3x3());
+        this.numVertices = row2col.length - 1;
+        
+        // Initialize working arrays
+        this.p = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
+        this.Ap = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
+    }
+
+    setZero(): void {
+        for (let idx = 0; idx < this.idx2val.length; idx++) {
+            this.idx2val[idx] = new Matrix3x3(); // Zero matrix
+        }
+    }
+
+    addBlockAt(i_row: number, i_col: number, val: Matrix3x3): void {
+        for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
+            if (this.idx2col[idx] === i_col) {
+                this.idx2val[idx] = this.idx2val[idx].add(val);
+                return;
+            }
+        }
+        console.error(`Block position (${i_row}, ${i_col}) not found in sparse matrix structure`);
+    }
+
+    setFixed(i_vtx: number): void {
+        for (let j_vtx = 0; j_vtx < this.row2idx.length - 1; j_vtx++) {
+            if (j_vtx === i_vtx) {
+                // For the fixed vertex row
+                for (let idx = this.row2idx[j_vtx]; idx < this.row2idx[j_vtx + 1]; idx++) {
+                    if (this.idx2col[idx] === i_vtx) {
+                        this.idx2val[idx] = this.idx2val[idx].add(Matrix3x3.identity());
+                    } else {
+                        this.idx2val[idx] = new Matrix3x3(); // Zero
+                    }
+                }
+            } else {
+                // For other rows, zero out the column corresponding to fixed vertex
+                for (let idx = this.row2idx[j_vtx]; idx < this.row2idx[j_vtx + 1]; idx++) {
+                    if (this.idx2col[idx] === i_vtx) {
+                        this.idx2val[idx] = new Matrix3x3(); // Zero
+                    }
+                }
+            }
+        }
+    }
+
+    multiply(x: Vector3[], result: Vector3[]): void {
+        for (let i_row = 0; i_row < this.row2idx.length - 1; i_row++) {
+            result[i_row] = new Vector3(0, 0, 0);
+            for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
+                const j_col = this.idx2col[idx];
+                result[i_row].addInPlace(this.idx2val[idx].multiplyVector(x[j_col]));
+            }
+        }
+    }
+
+    conjugateGradientSolver(r: Vector3[], maxIterations: number = 100, tolerance: number = 1e-6): Vector3[] {
+        const n = r.length;
+        const x = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
+        
+        // Copy r to p
+        for (let i = 0; i < n; i++) {
+            this.p[i] = r[i].clone();
+        }
+        
+        let rsOld = 0;
+        for (let i = 0; i < n; i++) {
+            rsOld += Vector3.Dot(r[i], r[i]);
+        }
+        
+        for (let iter = 0; iter < maxIterations; iter++) {
+            this.multiply(this.p, this.Ap);
+            
+            let pAp = 0;
+            for (let i = 0; i < n; i++) {
+                pAp += Vector3.Dot(this.p[i], this.Ap[i]);
+            }
+            
+            if (Math.abs(pAp) < 1e-12) {
+                break;
+            }
+            
+            const alpha = rsOld / pAp;
+            
+            for (let i = 0; i < n; i++) {
+                x[i].addInPlace(this.p[i].scale(alpha));
+                r[i].subtractInPlace(this.Ap[i].scale(alpha));
+            }
+            
+            let rsNew = 0;
+            for (let i = 0; i < n; i++) {
+                rsNew += Vector3.Dot(r[i], r[i]);
+            }
+            
+            if (Math.sqrt(rsNew) < tolerance) {
+                break;
+            }
+            
+            const beta = rsNew / rsOld;
+            for (let i = 0; i < n; i++) {
+                this.p[i] = r[i].add(this.p[i].scale(beta));
+            }
+            
+            rsOld = rsNew;
+        }
+        
+        return x;
+    }
+}
+
+// Spring energy, gradient, and hessian computation
+function springEnergyGradientHessian(
+    pos0: Vector3, 
+    pos1: Vector3, 
+    restLength: number, 
+    stiffness: number
+): { energy: number, gradients: Vector3[], hessian: Matrix3x3[][] } {
+    const diff = pos1.subtract(pos0);
+    const currentLength = diff.length();
+    
+    if (currentLength < 1e-8) {
+        // Degenerate case
+        return {
+            energy: 0,
+            gradients: [new Vector3(0, 0, 0), new Vector3(0, 0, 0)],
+            hessian: [[Matrix3x3.identity().scale(stiffness), Matrix3x3.identity().scale(-stiffness)], 
+                     [Matrix3x3.identity().scale(-stiffness), Matrix3x3.identity().scale(stiffness)]]
+        };
+    }
+    
+    const strain = currentLength - restLength;  // C in Unity code
+    const energy = 0.5 * stiffness * strain * strain;
+    
+    const u = diff.normalize();  // u01 in Unity code
+    const gradients = [u.scale(-stiffness * strain), u.scale(stiffness * strain)];
+    
+    // Hessian computation (simplified like Unity)
+    const uu = Matrix3x3.outerProduct(u, u);  // l in Unity code
+    const H = uu.scale(stiffness);  // n in Unity code, then o = n
+    
+    const hessian = [
+        [H, H.scale(-1)],
+        [H.scale(-1), H]
+    ];
+    
+    return { energy, gradients, hessian };
+}
+
+// Geometry class to define the structure
+export class Geometry {
+    positions: Vector3[];
+    initialPositions: Vector3[];
+    edges: number[]; // [v0, v1, v2, v3, ...] pairs
+    fixedVertices: Set<number>;
+    stiffness: number; // Material property
+
+    constructor(positions: Vector3[], edges: number[], stiffness: number = 100) {
+        this.positions = positions.map(p => p.clone());
+        this.initialPositions = positions.map(p => p.clone());
+        this.edges = [...edges];
+        this.fixedVertices = new Set();
         this.stiffness = stiffness;
     }
+
+    setFixedVertex(vertexIndex: number): void {
+        this.fixedVertices.add(vertexIndex);
+    }
+
+    setFixedVertices(vertexIndices: number[]): void {
+        for (const index of vertexIndices) {
+            this.fixedVertices.add(index);
+        }
+    }
+
+    isFixed(vertexIndex: number): boolean {
+        return this.fixedVertices.has(vertexIndex);
+    }
+
+    getRestLength(edgeIndex: number): number {
+        const v0 = this.edges[edgeIndex * 2];
+        const v1 = this.edges[edgeIndex * 2 + 1];
+        return Vector3.Distance(this.initialPositions[v0], this.initialPositions[v1]);
+    }
+
+    getNumVertices(): number {
+        return this.positions.length;
+    }
+
+    getNumEdges(): number {
+        return this.edges.length / 2;
+    }
 }
 
-class Geometry {
-    nodes: Node[];
-    springs: Spring[];
-
-    constructor() {
-        this.nodes = [];
-        this.springs = [];
-    }
-
-    addNode(node: Node): void {
-        this.nodes.push(node);
-    }
-
-    addSpring(spring: Spring): void {
-        this.springs.push(spring);
-    }
-}
-
-export class Solver {
-    geometry: Geometry;
-    gravity: Vector3 = new Vector3(0, -9.8, 0);
-
-    get positions(): Vector3[] {
-        return this.geometry.nodes.map(node => node.position);
-    }
+export class ImplicitSolver {
+    private geometry: Geometry;
+    private bsm: BlockSparseMatrix;
+    private velocities: Vector3[];
+    private mass: number = 1.0;
+    private gravity: Vector3 = new Vector3(0, -0.05, 0);
+    private timeStep: number = 0.1;
 
     constructor(geometry: Geometry) {
         this.geometry = geometry;
+        this.bsm = new BlockSparseMatrix();
+        
+        // Create sparse matrix structure
+        const structure = this.createSparseMatrixStructure(geometry);
+        this.bsm.initialize(structure.row2idx, structure.idx2col);
+        
+        // Initialize velocities to zero
+        this.velocities = new Array(geometry.getNumVertices())
+            .fill(null).map(() => new Vector3(0, 0, 0));
     }
 
-    step(deltaTime: number) {
-        const dt = deltaTime;
-        const g = this.gravity;
-        const springs = this.geometry.springs;
-
-        for (const spring of springs) {
-            const node0 = spring.node0;
-            const node1 = spring.node1;
-
-            const dir = node1.position.subtract(node0.position);
-            const currentLength = dir.length();
-            if (currentLength === 0) continue;
-
-            const forceMagnitude = spring.stiffness * (currentLength - spring.restLength);
-            const forceDir = dir.normalize();
-            const force = forceDir.scale(forceMagnitude);
-
-            if (!node0.isFixed) {
-                node0.velocity.addInPlace(force.scale(dt / node0.mass));
-                node0.velocity.addInPlace(g.scale(dt));
-                node0.position.addInPlace(node0.velocity.scale(dt));
+    private createSparseMatrixStructure(geometry: Geometry): { row2idx: number[], idx2col: number[] } {
+        const numVertices = geometry.getNumVertices();
+        const adjacency = new Map<number, Set<number>>();
+        
+        // Initialize adjacency lists
+        for (let i = 0; i < numVertices; i++) {
+            adjacency.set(i, new Set([i])); // Self-connection
+        }
+        
+        // Add edge connections
+        for (let i = 0; i < geometry.getNumEdges(); i++) {
+            const v0 = geometry.edges[i * 2];
+            const v1 = geometry.edges[i * 2 + 1];
+            adjacency.get(v0)!.add(v1);
+            adjacency.get(v1)!.add(v0);
+        }
+        
+        // Build CSR structure
+        const row2idx: number[] = [0];
+        const idx2col: number[] = [];
+        
+        for (let i = 0; i < numVertices; i++) {
+            const neighbors = Array.from(adjacency.get(i)!).sort((a, b) => a - b);
+            for (const neighbor of neighbors) {
+                idx2col.push(neighbor);
             }
+            row2idx.push(idx2col.length);
+        }
+        
+        return { row2idx, idx2col };
+    }
 
-            if (!node1.isFixed) {
-                node1.velocity.subtractInPlace(force.scale(dt / node1.mass));
-                node1.velocity.addInPlace(g.scale(dt));
-                node1.position.addInPlace(node1.velocity.scale(dt));
+    step(deltaTime: number): void {
+        const numVertices = this.geometry.getNumVertices();
+        const gradient = new Array(numVertices).fill(null).map(() => new Vector3(0, 0, 0));
+        
+        this.bsm.setZero();
+        
+        // Step 1: Update positions using current velocities
+        for (let i = 0; i < numVertices; i++) {
+            if (!this.geometry.isFixed(i)) {
+                this.geometry.positions[i].addInPlace(this.velocities[i].scale(this.timeStep));
             }
         }
+        
+        let totalEnergy = 0;
+        
+        // Step 2: Process each edge (spring) to compute forces and hessian
+        for (let i = 0; i < this.geometry.getNumEdges(); i++) {
+            const v0 = this.geometry.edges[i * 2];
+            const v1 = this.geometry.edges[i * 2 + 1];
+            const restLength = this.geometry.getRestLength(i);
+            
+            const result = springEnergyGradientHessian(
+                this.geometry.positions[v0],
+                this.geometry.positions[v1],
+                restLength,
+                this.geometry.stiffness
+            );
+            
+            totalEnergy += result.energy;
+            
+            // Add gradients (forces)
+            gradient[v0].addInPlace(result.gradients[0]);
+            gradient[v1].addInPlace(result.gradients[1]);
+            
+            // Add hessian blocks to matrix
+            this.bsm.addBlockAt(v0, v0, result.hessian[0][0]);
+            this.bsm.addBlockAt(v0, v1, result.hessian[0][1]);
+            this.bsm.addBlockAt(v1, v0, result.hessian[1][0]);
+            this.bsm.addBlockAt(v1, v1, result.hessian[1][1]);
+        }
+        
+        // Step 3: Add mass matrix (like Unity: mass_point / (timeStep * timeStep))
+        const massMatrix = Matrix3x3.identity().scale(this.mass / (this.timeStep * this.timeStep));
+        for (let i = 0; i < numVertices; i++) {
+            this.bsm.addBlockAt(i, i, massMatrix);
+        }
+        
+        // Step 4: Add gravity forces
+        for (let i = 0; i < numVertices; i++) {
+            gradient[i].subtractInPlace(this.gravity.scale(this.mass));
+            totalEnergy -= this.mass * Vector3.Dot(this.gravity, this.geometry.positions[i]);
+        }
+        
+        // Step 5: Handle fixed vertices (like Unity)
+        for (const fixedIndex of this.geometry.fixedVertices) {
+            gradient[fixedIndex] = new Vector3(0, 0, 0);
+            this.velocities[fixedIndex] = new Vector3(0, 0, 0);
+            this.bsm.setFixed(fixedIndex);
+        }
+        
+        // Step 6: Solve linear system
+        const delta = this.bsm.conjugateGradientSolver(gradient, 100, 1e-6);
+        
+        // Step 7: Update velocities and positions
+        for (let i = 0; i < numVertices; i++) {
+            if (!this.geometry.isFixed(i)) {
+                this.velocities[i].subtractInPlace(delta[i].scale(1 / this.timeStep));
+                this.geometry.positions[i].subtractInPlace(delta[i]);
+            }
+        }
+    }
+
+    getPositions(): Vector3[] {
+        return this.geometry.positions.map(p => p.clone());
     }
 }
 
-export class Cloth extends Geometry {
-    width: number;
-    height: number;
-    segmentsX: number;
-    segmentsY: number;
-
-    constructor(width: number, height: number, segmentsX: number, segmentsY: number) {
-        super();
-        this.width = width;
-        this.height = height;
-        this.segmentsX = segmentsX;
-        this.segmentsY = segmentsY;
-        this.createCloth();
+// Utility function to create a chain of springs
+export function createChain(numVertices: number, stiffness: number = 100): Geometry {
+    const positions = [];
+    const edges = [];
+    
+    // Create horizontal chain along x-axis
+    for (let i = 0; i < numVertices; i++) {
+        positions.push(new Vector3(i, 5, 0));  // Horizontal chain at y=5
     }
-
-    private createCloth(): void {
-        const stepX = this.width / this.segmentsX;
-        const stepY = this.height / this.segmentsY;
-
-        // Create nodes in a grid pattern
-        for (let y = 0; y <= this.segmentsY; y++) {
-            for (let x = 0; x <= this.segmentsX; x++) {
-                const position = new Vector3(
-                    x * stepX - this.width / 2,
-                    y * stepY,
-                    0
-                );
-                const mass = 1.0;
-                // fixed nodes
-                const isFixed = (y === this.segmentsY && (x === 0 || x === this.segmentsX));
-                const node = new Node(position, mass, isFixed);
-                this.addNode(node);
-            }
-        }
-
-        // Create horizontal springs
-        for (let y = 0; y <= this.segmentsY; y++) {
-            for (let x = 0; x < this.segmentsX; x++) {
-                const index0 = y * (this.segmentsX + 1) + x;
-                const index1 = y * (this.segmentsX + 1) + (x + 1);
-                const spring = new Spring(this.nodes[index0], this.nodes[index1], 100);
-                this.addSpring(spring);
-            }
-        }
-
-        // Create vertical springs
-        for (let y = 0; y < this.segmentsY; y++) {
-            for (let x = 0; x <= this.segmentsX; x++) {
-                const index0 = y * (this.segmentsX + 1) + x;
-                const index1 = (y + 1) * (this.segmentsX + 1) + x;
-                const spring = new Spring(this.nodes[index0], this.nodes[index1], 100);
-                this.addSpring(spring);
-            }
-        }
-
-        // Create diagonal springs for shear resistance
-        for (let y = 0; y < this.segmentsY; y++) {
-            for (let x = 0; x < this.segmentsX; x++) {
-                const index0 = y * (this.segmentsX + 1) + x;
-                const index1 = (y + 1) * (this.segmentsX + 1) + (x + 1);
-                const index2 = y * (this.segmentsX + 1) + (x + 1);
-                const index3 = (y + 1) * (this.segmentsX + 1) + x;
-                
-                // Cross diagonal springs
-                const spring1 = new Spring(this.nodes[index0], this.nodes[index1], 50);
-                const spring2 = new Spring(this.nodes[index2], this.nodes[index3], 50);
-                this.addSpring(spring1);
-                this.addSpring(spring2);
-            }
-        }
+    
+    for (let i = 0; i < numVertices - 1; i++) {
+        edges.push(i, i + 1);
     }
+    
+    const geometry = new Geometry(positions, edges, stiffness);
+    geometry.setFixedVertex(0); // Fix first vertex (left end of chain)
+    
+    return geometry;
 }
 
-// Factory function to create a cloth simulation
-export function createCloth(width: number = 2, height: number = 2, segmentsX: number = 10, segmentsY: number = 10): Cloth {
-    return new Cloth(width, height, segmentsX, segmentsY);
+// Utility function to create a cloth (2D grid of springs)
+export function createCloth(width: number, height: number, resolutionX: number, resolutionY: number, stiffness: number = 100): Geometry {
+    const positions = [];
+    const edges = [];
+    
+    // Create grid of vertices
+    for (let j = 0; j <= resolutionY; j++) {
+        for (let i = 0; i <= resolutionX; i++) {
+            const x = (i / resolutionX) * width - width / 2;  // Center the cloth
+            const y = 5;  // Height of the cloth
+            const z = (j / resolutionY) * height - height / 2;  // Center the cloth
+            positions.push(new Vector3(x, y, z));
+        }
+    }
+    
+    // Create horizontal edges (structural springs)
+    for (let j = 0; j <= resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const v0 = j * (resolutionX + 1) + i;
+            const v1 = j * (resolutionX + 1) + i + 1;
+            edges.push(v0, v1);
+        }
+    }
+    
+    // Create vertical edges (structural springs)
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i <= resolutionX; i++) {
+            const v0 = j * (resolutionX + 1) + i;
+            const v1 = (j + 1) * (resolutionX + 1) + i;
+            edges.push(v0, v1);
+        }
+    }
+    
+    // Create diagonal edges (shear springs) - optional for better cloth behavior
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const topLeft = j * (resolutionX + 1) + i;
+            const topRight = j * (resolutionX + 1) + i + 1;
+            const bottomLeft = (j + 1) * (resolutionX + 1) + i;
+            const bottomRight = (j + 1) * (resolutionX + 1) + i + 1;
+            
+            // Diagonal from top-left to bottom-right
+            edges.push(topLeft, bottomRight);
+            // Diagonal from top-right to bottom-left
+            edges.push(topRight, bottomLeft);
+        }
+    }
+    
+    const geometry = new Geometry(positions, edges, stiffness);
+    
+    // Fix the top corners of the cloth
+    geometry.setFixedVertex(0);  // Top-left corner
+    geometry.setFixedVertex(resolutionX);  // Top-right corner
+    
+    return geometry;
 }

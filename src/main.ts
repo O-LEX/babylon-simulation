@@ -1,32 +1,28 @@
-import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh, StandardMaterial, Color3 } from "@babylonjs/core";
-import { Solver, createCloth } from "./simulation";
+import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
+// import { Solver, createCloth } from "./old";
+import { ImplicitSolver, createChain, createCloth } from "./simulation";
 
 function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const scene = new Scene(engine);
 
-    const camera = new ArcRotateCamera("camera", Math.PI / 2, Math.PI / 4, 10, new Vector3(0, 1, 0), scene);
+    const camera = new ArcRotateCamera("camera", Math.PI / 4, Math.PI / 3, 15, new Vector3(0, 2, 0), scene);
     camera.attachControl(canvas, true);
 
     const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
 
-    // const ground = MeshBuilder.CreateGround("ground", { width: 20, height: 20 }, scene);
-
     const fpsDisplay = document.getElementById("fpsDisplay");
 
-    // Create cloth simulation
-    const cloth = createCloth(4, 3, 8, 6); // width=4, height=3, segmentsX=8, segmentsY=6
-    const solver = new Solver(cloth);
+    // const geometry = createChain(10, 100); // 10 vertices, stiffness=100
+    const geometry = createCloth(6, 6, 8, 8, 100); // 6x6 world units, 8x8 resolution, stiffness=100
+    const solver = new ImplicitSolver(geometry);
 
-    // Create spheres to visualize cloth nodes
-    const sphereSize = 0.1;
+    // Create spheres to visualize nodes
+    const sphereSize = 0.15; // Smaller spheres for cloth
     const spheres: Mesh[] = [];
-    const material = new StandardMaterial("sphereMaterial", scene);
-    material.diffuseColor = new Color3(0.0, 0.0, 0.0);
     
-    for (let i = 0; i < cloth.nodes.length; i++) {
+    for (let i = 0; i < geometry.getNumVertices(); i++) {
         const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
-        sphere.position = cloth.nodes[i].position.clone();
-        sphere.material = material;
+        sphere.position = geometry.positions[i].clone();
         spheres.push(sphere);
     }
 
@@ -34,9 +30,10 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         const deltaTime = engine.getDeltaTime() / 1000;
 
         solver.step(deltaTime);
+        const currentPositions = solver.getPositions();
 
         for (let i = 0; i < spheres.length; i++) {
-            spheres[i].position.copyFrom(solver.positions[i]);
+            spheres[i].position.copyFrom(currentPositions[i]);
         }
 
         if (fpsDisplay) {
