@@ -26,12 +26,22 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         spheres.push(sphere);
     }
 
+    // https://gafferongames.com/post/fix_your_timestep/
+    let lastTime = performance.now();
+    const fixedTimeStep = 1/60; // 60Hz physics
+    let accumulator = 0;
+
     scene.registerBeforeRender(() => {
-        const deltaTime = engine.getDeltaTime() / 1000;
-
-        solver.step(deltaTime);
+        const currentTime = performance.now();
+        const frameTime = Math.min((currentTime - lastTime) / 1000, 0.25); // Cap at 250ms
+        lastTime = currentTime;
+        accumulator += frameTime;
+        while (accumulator >= fixedTimeStep) {
+            solver.step(fixedTimeStep);
+            accumulator -= fixedTimeStep;
+        }
+        
         const currentPositions = solver.getPositions();
-
         for (let i = 0; i < spheres.length; i++) {
             spheres[i].position.copyFrom(currentPositions[i]);
         }

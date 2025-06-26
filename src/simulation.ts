@@ -269,8 +269,7 @@ export class ImplicitSolver {
     private bsm: BlockSparseMatrix;
     private velocities: Vector3[];
     private mass: number = 1.0;
-    private gravity: Vector3 = new Vector3(0, -0.05, 0);
-    private timeStep: number = 0.1;
+    private gravity: Vector3 = new Vector3(0, -1.0, 0);
 
     constructor(geometry: Geometry) {
         this.geometry = geometry;
@@ -326,7 +325,7 @@ export class ImplicitSolver {
         // Step 1: Update positions using current velocities
         for (let i = 0; i < numVertices; i++) {
             if (!this.geometry.isFixed(i)) {
-                this.geometry.positions[i].addInPlace(this.velocities[i].scale(this.timeStep));
+                this.geometry.positions[i].addInPlace(this.velocities[i].scale(deltaTime));
             }
         }
         
@@ -358,8 +357,8 @@ export class ImplicitSolver {
             this.bsm.addBlockAt(v1, v1, result.hessian[1][1]);
         }
         
-        // Step 3: Add mass matrix (like Unity: mass_point / (timeStep * timeStep))
-        const massMatrix = Matrix3x3.identity().scale(this.mass / (this.timeStep * this.timeStep));
+        // Step 3: Add mass matrix (mass_point / (timeStep * timeStep))
+        const massMatrix = Matrix3x3.identity().scale(this.mass / (deltaTime * deltaTime));
         for (let i = 0; i < numVertices; i++) {
             this.bsm.addBlockAt(i, i, massMatrix);
         }
@@ -370,7 +369,7 @@ export class ImplicitSolver {
             totalEnergy -= this.mass * Vector3.Dot(this.gravity, this.geometry.positions[i]);
         }
         
-        // Step 5: Handle fixed vertices (like Unity)
+        // Step 5: Handle fixed vertices
         for (const fixedIndex of this.geometry.fixedVertices) {
             gradient[fixedIndex] = new Vector3(0, 0, 0);
             this.velocities[fixedIndex] = new Vector3(0, 0, 0);
@@ -383,7 +382,7 @@ export class ImplicitSolver {
         // Step 7: Update velocities and positions
         for (let i = 0; i < numVertices; i++) {
             if (!this.geometry.isFixed(i)) {
-                this.velocities[i].subtractInPlace(delta[i].scale(1 / this.timeStep));
+                this.velocities[i].subtractInPlace(delta[i].scale(1 / deltaTime));
                 this.geometry.positions[i].subtractInPlace(delta[i]);
             }
         }
