@@ -452,7 +452,7 @@ export class DERSolver {
         return { energy, gradients, hessian };
     }
 
-    // Bending energy computation using discrete viscous thread model
+    // Bending energy computation using discrete curvature
     private computeBendingForces(
         p0: Vector3, 
         p1: Vector3, 
@@ -477,29 +477,54 @@ export class DERSolver {
             };
         }
         
-        const t1 = e1.normalize();
-        const t2 = e2.normalize();
+        // Normalized tangent vectors
+        const t1 = e1.scale(1.0 / l1);
+        const t2 = e2.scale(1.0 / l2);
         
-        // Curvature vector (discrete difference of tangents)
+        // Discrete curvature vector: κ = 2 * (t2 - t1) / (l1 + l2)
+        const avgLength = (l1 + l2) * 0.5;
         const kappa = t2.subtract(t1).scale(2.0 / (l1 + l2));
         const kappaSquared = Vector3.Dot(kappa, kappa);
         
-        const energy = 0.5 * stiffness * kappaSquared;
+        // Bending energy: E = (1/2) * EI * |κ|^2 * avgLength
+        const energy = 0.5 * stiffness * kappaSquared * avgLength;
         
-        // Gradients (simplified computation)
-        const factor = stiffness * 2.0 / (l1 + l2);
-        const grad0 = kappa.scale(-factor / l1);
-        const grad1 = kappa.scale(factor * (1.0 / l1 + 1.0 / l2));
-        const grad2 = kappa.scale(-factor / l2);
+        // Compute gradients analytically
+        const factor = stiffness * avgLength * 2.0 / (l1 + l2);
+        
+        // ∂κ/∂p0 = -2/(l1+l2) * (1/l1 * I - t1⊗t1/l1)
+        const t1OuterT1 = Matrix3x3.outerProduct(t1, t1);
+        const dKappa_dp0_matrix = Matrix3x3.identity().subtract(t1OuterT1).scale(-2.0 / ((l1 + l2) * l1));
+        const grad0 = dKappa_dp0_matrix.multiplyVector(kappa).scale(factor);
+        
+        // ∂κ/∂p2 = 2/(l1+l2) * (1/l2 * I - t2⊗t2/l2)  
+        const t2OuterT2 = Matrix3x3.outerProduct(t2, t2);
+        const dKappa_dp2_matrix = Matrix3x3.identity().subtract(t2OuterT2).scale(2.0 / ((l1 + l2) * l2));
+        const grad2 = dKappa_dp2_matrix.multiplyVector(kappa).scale(factor);
+        
+        // ∂κ/∂p1 = -(∂κ/∂p0 + ∂κ/∂p2)
+        const grad1 = grad0.add(grad2).scale(-1);
         
         const gradients = [grad0, grad1, grad2];
         
-        // Simplified hessian (identity scaled by stiffness for stability)
-        const H = Matrix3x3.identity().scale(stiffness * 0.1);
+        // Compute Hessian matrices
+        const hessianFactor = stiffness * avgLength * 4.0 / ((l1 + l2) * (l1 + l2));
+        
+        // Simplified Hessian computation for stability and correctness
+        const baseHessian = Matrix3x3.identity().scale(stiffness * 0.01); // Small regularization
+        const gradientContrib = Matrix3x3.outerProduct(kappa, kappa).scale(hessianFactor);
+        
+        const H00 = baseHessian.add(gradientContrib.scale(1.0 / (l1 * l1)));
+        const H22 = baseHessian.add(gradientContrib.scale(1.0 / (l2 * l2)));
+        const H01 = gradientContrib.scale(-1.0 / l1);
+        const H12 = gradientContrib.scale(-1.0 / l2);
+        const H02 = new Matrix3x3(); // Zero for non-adjacent vertices
+        const H11 = H00.add(H22).add(H01.scale(2)).add(H12.scale(2));
+        
         const hessian = [
-            [H, H.scale(-0.5), new Matrix3x3()],
-            [H.scale(-0.5), H.scale(2), H.scale(-0.5)],
-            [new Matrix3x3(), H.scale(-0.5), H]
+            [H00, H01, H02],
+            [H01, H11, H12],
+            [H02, H12, H22]
         ];
         
         return { energy, gradients, hessian };
@@ -646,8 +671,7 @@ export class DERSolver {
             this.bsm.addBlockAt(pos1Block, pos1Block, result.hessian[1][1]);
         }
         
-        // Step 3: Process bending forces (DISABLED FOR STRETCHING TEST)
-        /*
+        // Step 3: Process bending forces
         for (let i = 0; i < numVertices - 2; i++) {
             const result = this.computeBendingForces(
                 this.geometry.getPosition(i),
@@ -674,7 +698,6 @@ export class DERSolver {
                 }
             }
         }
-        */
         
         // Step 4: Process twisting forces (DISABLED FOR STRETCHING TEST)
         /*
