@@ -405,16 +405,16 @@ export class ImplicitSolver {
 }
 
 // Utility function to create a chain of springs
-export function createChain(numVertices: number, stiffness: number = 100, vertexMass: number = 1.0): Geometry {
+export function createChain(length: number, resolution: number, stiffness: number = 100, vertexMass: number = 1.0): Geometry {
     const positions = [];
     const edges = [];
     
     // Create horizontal chain along x-axis
-    for (let i = 0; i < numVertices; i++) {
-        positions.push(new Vector3(i, 5, 0));  // Horizontal chain at y=5
+    for (let i = 0; i < resolution; i++) {
+        positions.push(new Vector3((i / resolution) * length, 5, 0));  // Horizontal chain at y=5
     }
     
-    for (let i = 0; i < numVertices - 1; i++) {
+    for (let i = 0; i < resolution - 1; i++) {
         edges.push(i, i + 1);
     }
     

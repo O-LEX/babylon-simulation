@@ -23,15 +23,12 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     let sphereSize = 0.1;
 
     // Create simulation based on selected type
-    if (simulationType === "der-rod") {
-        geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
-        solver = new DERSolver(geometry);
-    } else if (simulationType === "chain") {
-        geometry = createChain(10);
+    if (simulationType === "chain") {
+        geometry = createChain(5, 10, 1000, 1.0);
         solver = new ImplicitSolver(geometry);
-        sphereSize = 0.15;
+        sphereSize = 0.1;
     } else if (simulationType === "cloth") {
-        geometry = createCloth(2, 2, 10, 10);
+        geometry = createCloth(5, 5, 10, 10, 1000, 1.0);
         solver = new ImplicitSolver(geometry);
         sphereSize = 0.05;
     } else {

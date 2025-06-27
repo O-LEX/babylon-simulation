@@ -55,6 +55,36 @@ class Matrix3x3 {
             this.data[6] * v.x + this.data[7] * v.y + this.data[8] * v.z
         );
     }
+
+    static rotationAroundAxis(axis: Vector3, angle: number): Matrix3x3 {
+        // Rodrigues' rotation formula implementation
+        const cos_a = Math.cos(angle);
+        const sin_a = Math.sin(angle);
+        const one_minus_cos = 1.0 - cos_a;
+        
+        const x = axis.x;
+        const y = axis.y;
+        const z = axis.z;
+        
+        const m = new Matrix3x3();
+        
+        // First row
+        m.data[0] = cos_a + x * x * one_minus_cos;
+        m.data[1] = x * y * one_minus_cos - z * sin_a;
+        m.data[2] = x * z * one_minus_cos + y * sin_a;
+        
+        // Second row
+        m.data[3] = y * x * one_minus_cos + z * sin_a;
+        m.data[4] = cos_a + y * y * one_minus_cos;
+        m.data[5] = y * z * one_minus_cos - x * sin_a;
+        
+        // Third row
+        m.data[6] = z * x * one_minus_cos - y * sin_a;
+        m.data[7] = z * y * one_minus_cos + x * sin_a;
+        m.data[8] = cos_a + z * z * one_minus_cos;
+        
+        return m;
+    }
 }
 
 // Block sparse matrix using CSR format
@@ -180,12 +210,28 @@ class BlockSparseMatrix {
     }
 }
 
+function parallelTransport(
+    d1_prev: Vector3,
+    t_prev: Vector3,
+    t_curr: Vector3
+): Vector3 {
+    const axis = Vector3.Cross(t_prev, t_curr);
+    const axis_len = axis.length();
+
+    if (axis_len < 1e-6) return d1_prev;
+
+    const angle = Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(t_prev, t_curr))));
+    const axis_norm = axis.scale(1.0 / axis_len);
+
+    const R = Matrix3x3.rotationAroundAxis(axis_norm, angle);
+    return R.multiplyVector(d1_prev).normalize();
+}
+
+
 // Discrete Elastic Rod geometry with alternating position-theta structure
 export class DERGeometry {
-    q: Vector3[]; // Alternating vector: q[2*i] = position[i], q[2*i+1] = theta[i] (x component only)
-    initialQ: Vector3[];
+    q: Vector3[] = []; // Alternating vector: q[2*i] = position[i], q[2*i+1] = theta[i] (x component only)
     
-    // Element data stored as Structure of Arrays for better cache efficiency
     restLengths: number[] = [];        // Rest length for each edge
     restTwists: number[] = [];         // Rest twist for each edge  
     restCurvatures: Vector3[] = [];    // Rest curvature for each edge
@@ -199,6 +245,16 @@ export class DERGeometry {
     vertexMass: number;
     radius: number; // Rod radius
 
+    tangents: Vector3[] = []; // normalized tangent vectors for each edge
+
+    // Reference frame (rest pose)
+    ref_d1: Vector3[] = [];
+    ref_d2: Vector3[] = [];
+
+    // Material frame (deformed pose)
+    mat_d1: Vector3[] = [];
+    mat_d2: Vector3[] = [];
+
     constructor(
         positions: Vector3[], 
         thetas: number[],
@@ -208,18 +264,9 @@ export class DERGeometry {
         vertexMass: number = 1.0,
         radius: number = 0.1
     ) {
-        // Create alternating q vector: position, theta, position, theta, ...
-        this.q = [];
-        this.initialQ = [];
-        
         for (let i = 0; i < positions.length; i++) {
-            // Position block
             this.q.push(positions[i].clone());
-            this.initialQ.push(positions[i].clone());
-            
-            // Theta block (only x component is used for twist)
             this.q.push(new Vector3(thetas[i], 0, 0));
-            this.initialQ.push(new Vector3(thetas[i], 0, 0));
         }
         
         this.fixedBlocks = new Set();
@@ -230,6 +277,9 @@ export class DERGeometry {
         this.radius = radius;
         
         this.createElementData(positions);
+        this.updateTangents();
+        this.updateReferenceFrames();
+        this.updateMaterialFrames();
     }
 
     private createElementData(positions: Vector3[]): void {
@@ -242,6 +292,56 @@ export class DERGeometry {
             this.restLengths[i] = Vector3.Distance(positions[i], positions[i + 1]);
             this.restTwists[i] = 0; // Initial twist
             this.restCurvatures[i] = new Vector3(0, 0, 0); // Initial curvature
+        }
+    }
+
+    updateTangents() {
+        this.tangents = [];
+        for (let i = 0; i < this.q.length / 2 - 1; i++) {
+            const x0 = this.q[2 * i];
+            const x1 = this.q[2 * (i + 1)];
+            const t = x1.subtract(x0).normalize();
+            this.tangents.push(t);
+        }
+    }
+
+    updateReferenceFrames() {
+        this.ref_d1 = [];
+        this.ref_d2 = [];
+
+        for (let i = 0; i < this.tangents.length; i++) {
+            const t = this.tangents[i];
+
+            let d1: Vector3;
+            if (i === 0) {
+                const up = Math.abs(Vector3.Dot(t, Vector3.Up())) > 0.9 ? Vector3.Right() : Vector3.Up();
+                d1 = Vector3.Cross(t, up).normalize();
+            } else {
+                const d1_prev = this.ref_d1[i - 1];
+                const t_prev = this.tangents[i - 1];
+                d1 = parallelTransport(d1_prev, t_prev, t);
+            }
+
+            const d2 = Vector3.Cross(t, d1).normalize();
+
+            this.ref_d1.push(d1);
+            this.ref_d2.push(d2);
+        }
+    }
+
+
+    updateMaterialFrames() {
+        for (let i = 0; i < this.tangents.length; i++) {
+            const t = this.tangents[i];
+            const theta = this.q[2 * i + 1].x;
+            const d1_ref = this.ref_d1[i];
+
+            const R_twist = Matrix3x3.rotationAroundAxis(t, theta);
+            const d1_mat = R_twist.multiplyVector(d1_ref).normalize();
+            const d2_mat = Vector3.Cross(t, d1_mat).normalize();
+
+            this.mat_d1[i] = d1_mat;
+            this.mat_d2[i] = d2_mat;
         }
     }
 
