@@ -264,6 +264,15 @@ export class Geometry {
     getNumEdges(): number {
         return this.edges.length / 2;
     }
+
+    // for visualization
+    getEdges(): [number, number][] {
+        const edgePairs: [number, number][] = [];
+        for (let i = 0; i < this.edges.length; i += 2) {
+            edgePairs.push([this.edges[i], this.edges[i + 1]]);
+        }
+        return edgePairs;
+    }
 }
 
 export class ImplicitSolver {
