@@ -218,85 +218,77 @@ function springEnergyGradientHessian(
     return { energy, gradients, hessian };
 }
 
-// Geometry class to define the structure
-export class Geometry {
+export interface Geometry {
     positions: Vector3[];
     initialPositions: Vector3[];
     edges: number[]; // [v0, v1, v2, v3, ...] pairs
     fixedVertices: Set<number>;
     stiffness: number; // Material property
     vertexMass: number; // Mass per vertex
+}
 
-    constructor(positions: Vector3[], edges: number[], stiffness: number = 100, vertexMass: number = 1.0) {
-        this.positions = positions.map(p => p.clone());
-        this.initialPositions = positions.map(p => p.clone());
-        this.edges = [...edges];
-        this.fixedVertices = new Set();
-        this.stiffness = stiffness;
-        this.vertexMass = vertexMass;
-    }
+export class ImplicitSolver {
+    private positions: Vector3[];
+    private edges: number[];
+    private fixedVertices: Set<number>;
+    private restLengths: number[];
+    private stiffness: number;
+    private vertexMass: number;
+    
+    private bsm: BlockSparseMatrix;
+    private velocities: Vector3[];
+    private gravity: Vector3 = new Vector3(0, -10.0, 0);
 
-    setFixedVertex(vertexIndex: number): void {
-        this.fixedVertices.add(vertexIndex);
-    }
-
-    setFixedVertices(vertexIndices: number[]): void {
-        for (const index of vertexIndices) {
-            this.fixedVertices.add(index);
+    constructor(geometry: Geometry) {
+        this.positions = geometry.positions.map(p => p.clone());
+        this.edges = [...geometry.edges];
+        this.fixedVertices = new Set(geometry.fixedVertices);
+        this.stiffness = geometry.stiffness;
+        this.vertexMass = geometry.vertexMass;
+        this.restLengths = new Array(this.getNumEdges());
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const v0 = this.edges[i * 2];
+            const v1 = this.edges[i * 2 + 1];
+            this.restLengths[i] = Vector3.Distance(geometry.initialPositions[v0], geometry.initialPositions[v1]);
         }
+        
+        this.bsm = new BlockSparseMatrix();
+        
+        // Create sparse matrix structure
+        const structure = this.createSparseMatrixStructure();
+        this.bsm.initialize(structure.row2idx, structure.idx2col);
+        
+        // Initialize velocities to zero
+        this.velocities = new Array(this.getNumPositions())
+            .fill(null).map(() => new Vector3(0, 0, 0));
     }
 
-    isFixed(vertexIndex: number): boolean {
-        return this.fixedVertices.has(vertexIndex);
-    }
-
-    getRestLength(edgeIndex: number): number {
-        const v0 = this.edges[edgeIndex * 2];
-        const v1 = this.edges[edgeIndex * 2 + 1];
-        return Vector3.Distance(this.initialPositions[v0], this.initialPositions[v1]);
-    }
-
-    getNumVertices(): number {
+    public getNumPositions(): number {
         return this.positions.length;
     }
 
-    getNumEdges(): number {
+    public getNumEdges(): number {
         return this.edges.length / 2;
     }
 
-    // for visualization
-    getEdges(): [number, number][] {
+    public getPositions(): Vector3[] {
+        return this.positions.map(p => p.clone());
+    }
+
+   public getEdges(): [number, number][] {
         const edgePairs: [number, number][] = [];
         for (let i = 0; i < this.edges.length; i += 2) {
             edgePairs.push([this.edges[i], this.edges[i + 1]]);
         }
         return edgePairs;
     }
-}
 
-export class ImplicitSolver {
-    private geometry: Geometry;
-    private bsm: BlockSparseMatrix;
-    private velocities: Vector3[];
-    private vertexMass: number; // Mass per vertex
-    private gravity: Vector3 = new Vector3(0, -10.0, 0);
-
-    constructor(geometry: Geometry) {
-        this.geometry = geometry;
-        this.bsm = new BlockSparseMatrix();
-        this.vertexMass = geometry.vertexMass; // Store vertex mass from geometry
-        
-        // Create sparse matrix structure
-        const structure = this.createSparseMatrixStructure(geometry);
-        this.bsm.initialize(structure.row2idx, structure.idx2col);
-        
-        // Initialize velocities to zero
-        this.velocities = new Array(geometry.getNumVertices())
-            .fill(null).map(() => new Vector3(0, 0, 0));
+    private isFixed(vertexIndex: number): boolean {
+        return this.fixedVertices.has(vertexIndex);
     }
 
-    private createSparseMatrixStructure(geometry: Geometry): { row2idx: number[], idx2col: number[] } {
-        const numVertices = geometry.getNumVertices();
+    private createSparseMatrixStructure(): { row2idx: number[], idx2col: number[] } {
+        const numVertices = this.getNumPositions();
         const adjacency = new Map<number, Set<number>>();
         
         // Initialize adjacency lists
@@ -305,9 +297,9 @@ export class ImplicitSolver {
         }
         
         // Add edge connections
-        for (let i = 0; i < geometry.getNumEdges(); i++) {
-            const v0 = geometry.edges[i * 2];
-            const v1 = geometry.edges[i * 2 + 1];
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const v0 = this.edges[i * 2];
+            const v1 = this.edges[i * 2 + 1];
             adjacency.get(v0)!.add(v1);
             adjacency.get(v1)!.add(v0);
         }
@@ -328,31 +320,31 @@ export class ImplicitSolver {
     }
 
     step(deltaTime: number): void {
-        const numVertices = this.geometry.getNumVertices();
+        const numVertices = this.getNumPositions();
         const gradient = new Array(numVertices).fill(null).map(() => new Vector3(0, 0, 0));
         
         this.bsm.setZero();
         
         // Step 1: Update positions using current velocities
         for (let i = 0; i < numVertices; i++) {
-            if (!this.geometry.isFixed(i)) {
-                this.geometry.positions[i].addInPlace(this.velocities[i].scale(deltaTime));
+            if (!this.isFixed(i)) {
+                this.positions[i].addInPlace(this.velocities[i].scale(deltaTime));
             }
         }
         
         let totalEnergy = 0;
         
         // Step 2: Process each edge (spring) to compute forces and hessian
-        for (let i = 0; i < this.geometry.getNumEdges(); i++) {
-            const v0 = this.geometry.edges[i * 2];
-            const v1 = this.geometry.edges[i * 2 + 1];
-            const restLength = this.geometry.getRestLength(i);
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const v0 = this.edges[i * 2];
+            const v1 = this.edges[i * 2 + 1];
+            const restLength = this.restLengths[i];
             
             const result = springEnergyGradientHessian(
-                this.geometry.positions[v0],
-                this.geometry.positions[v1],
+                this.positions[v0],
+                this.positions[v1],
                 restLength,
-                this.geometry.stiffness
+                this.stiffness
             );
             
             totalEnergy += result.energy;
@@ -376,11 +368,11 @@ export class ImplicitSolver {
         // Step 4: Add gravity forces
         for (let i = 0; i < numVertices; i++) {
             gradient[i].subtractInPlace(this.gravity.scale(this.vertexMass));
-            totalEnergy -= this.vertexMass * Vector3.Dot(this.gravity, this.geometry.positions[i]);
+            totalEnergy -= this.vertexMass * Vector3.Dot(this.gravity, this.positions[i]);
         }
         
         // Step 5: Handle fixed vertices
-        for (const fixedIndex of this.geometry.fixedVertices) {
+        for (const fixedIndex of this.fixedVertices) {
             gradient[fixedIndex] = new Vector3(0, 0, 0);
             this.velocities[fixedIndex] = new Vector3(0, 0, 0);
             this.bsm.setFixed(fixedIndex);
@@ -391,15 +383,11 @@ export class ImplicitSolver {
         
         // Step 7: Update velocities and positions
         for (let i = 0; i < numVertices; i++) {
-            if (!this.geometry.isFixed(i)) {
+            if (!this.isFixed(i)) {
                 this.velocities[i].subtractInPlace(delta[i].scale(1 / deltaTime));
-                this.geometry.positions[i].subtractInPlace(delta[i]);
+                this.positions[i].subtractInPlace(delta[i]);
             }
         }
-    }
-
-    getPositions(): Vector3[] {
-        return this.geometry.positions.map(p => p.clone());
     }
 }
 
@@ -417,8 +405,14 @@ export function createChain(length: number, resolution: number, stiffness: numbe
         edges.push(i, i + 1);
     }
     
-    const geometry = new Geometry(positions, edges, stiffness, vertexMass);
-    geometry.setFixedVertex(0); // Fix first vertex (left end of chain)
+    const geometry = {
+        positions: positions,
+        initialPositions: positions.map(p => p.clone()),
+        edges: edges,
+        fixedVertices: new Set([0]),
+        stiffness: stiffness,
+        vertexMass: vertexMass
+    };
     
     return geometry;
 }
@@ -471,11 +465,14 @@ export function createCloth(width: number, height: number, resolutionX: number, 
         }
     }
     
-    const geometry = new Geometry(positions, edges, stiffness, vertexMass);
-    
-    // Fix the top corners of the cloth
-    geometry.setFixedVertex(0);  // Top-left corner
-    geometry.setFixedVertex(resolutionX);  // Top-right corner
+    const geometry = {
+        positions: positions,
+        initialPositions: positions.map(p => p.clone()),
+        edges: edges,
+        fixedVertices: new Set([0, resolutionX]),
+        stiffness: stiffness,
+        vertexMass: vertexMass
+    };
     
     return geometry;
 }

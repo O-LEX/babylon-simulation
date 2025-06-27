@@ -33,8 +33,11 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         sphereSize = 0.05;
     } else {
         // Default to DER rod
-        geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
-        solver = new DERSolver(geometry);
+        // geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
+        // solver = new DERSolver(geometry);
+        geometry = createCloth(5, 5, 10, 10, 1000, 1.0);
+        solver = new ImplicitSolver(geometry);
+        sphereSize = 0.05;
     }
 
     // Create spheres to visualize nodes
@@ -42,7 +45,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
 
     let currentPositions = solver.getPositions();
     
-    for (let i = 0; i < geometry.getNumVertices(); i++) {
+    for (let i = 0; i < solver.getNumPositions(); i++) {
         const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
         sphere.position = currentPositions[i];
         spheres.push(sphere);
@@ -54,7 +57,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
 
     if (simulationType === "cloth") {
         // Cloth: Create individual lines for each edge
-        const edgeList = geometry.getEdges();
+        const edgeList = solver.getEdges();
         const edgeLines: Mesh[] = [];
         
         for (let i = 0; i < edgeList.length; i++) {
@@ -105,7 +108,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
             (edges as Mesh).updateVerticesData("position", currentPositions.flatMap((v: Vector3) => [v.x, v.y, v.z]));
         } else {
             // Multiple individual lines (Cloth)
-            const edgeList = geometry.getEdges();
+            const edgeList = solver.getEdges();
             const edgeLines = edges as Mesh[];
             
             for (let i = 0; i < edgeList.length; i++) {
