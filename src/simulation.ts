@@ -62,7 +62,6 @@ class BlockSparseMatrix {
     private row2idx: number[] = [];
     private idx2col: number[] = [];
     private idx2val: Matrix3x3[] = [];
-    private numVertices: number = 0;
     
     // Working arrays for CG solver
     private p: Vector3[] = [];
@@ -72,11 +71,11 @@ class BlockSparseMatrix {
         this.row2idx = [...row2col];
         this.idx2col = [...idx2col];
         this.idx2val = new Array(idx2col.length).fill(null).map(() => new Matrix3x3());
-        this.numVertices = row2col.length - 1;
+        const n = row2col.length - 1;
         
         // Initialize working arrays
-        this.p = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
-        this.Ap = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
+        this.p = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
+        this.Ap = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
     }
 
     setZero(): void {
@@ -95,21 +94,21 @@ class BlockSparseMatrix {
         console.error(`Block position (${i_row}, ${i_col}) not found in sparse matrix structure`);
     }
 
-    setFixed(i_vtx: number): void {
-        for (let j_vtx = 0; j_vtx < this.row2idx.length - 1; j_vtx++) {
-            if (j_vtx === i_vtx) {
-                // For the fixed vertex row
-                for (let idx = this.row2idx[j_vtx]; idx < this.row2idx[j_vtx + 1]; idx++) {
-                    if (this.idx2col[idx] === i_vtx) {
+    setFixed(i_block: number): void {
+        for (let j_block = 0; j_block < this.row2idx.length - 1; j_block++) {
+            if (j_block === i_block) {
+                // For the fixed block row
+                for (let idx = this.row2idx[j_block]; idx < this.row2idx[j_block + 1]; idx++) {
+                    if (this.idx2col[idx] === i_block) {
                         this.idx2val[idx] = this.idx2val[idx].add(Matrix3x3.identity());
                     } else {
                         this.idx2val[idx] = new Matrix3x3(); // Zero
                     }
                 }
             } else {
-                // For other rows, zero out the column corresponding to fixed vertex
-                for (let idx = this.row2idx[j_vtx]; idx < this.row2idx[j_vtx + 1]; idx++) {
-                    if (this.idx2col[idx] === i_vtx) {
+                // For other rows, zero out the column corresponding to fixed block
+                for (let idx = this.row2idx[j_block]; idx < this.row2idx[j_block + 1]; idx++) {
+                    if (this.idx2col[idx] === i_block) {
                         this.idx2val[idx] = new Matrix3x3(); // Zero
                     }
                 }

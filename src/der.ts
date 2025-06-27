@@ -210,23 +210,18 @@ class BlockSparseMatrix {
     }
 }
 
-function parallelTransport(
-    d1_prev: Vector3,
-    t_prev: Vector3,
-    t_curr: Vector3
-): Vector3 {
+function parallelTransport(director: Vector3, t_prev: Vector3, t_curr: Vector3): Vector3 {
     const axis = Vector3.Cross(t_prev, t_curr);
     const axis_len = axis.length();
 
-    if (axis_len < 1e-6) return d1_prev;
+    if (axis_len < 1e-6) return director;
 
     const angle = Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(t_prev, t_curr))));
     const axis_norm = axis.scale(1.0 / axis_len);
 
     const R = Matrix3x3.rotationAroundAxis(axis_norm, angle);
-    return R.multiplyVector(d1_prev).normalize();
+    return R.multiplyVector(director).normalize();
 }
-
 
 // Discrete Elastic Rod geometry with alternating position-theta structure
 export class DERGeometry {
@@ -245,14 +240,12 @@ export class DERGeometry {
     vertexMass: number;
     radius: number; // Rod radius
 
-    tangents: Vector3[] = []; // normalized tangent vectors for each edge
+    tangents: Vector3[] = []; // Normalized tangent vectors for each edge
 
-    // Reference frame (rest pose)
-    ref_d1: Vector3[] = [];
+    ref_d1: Vector3[] = []; // Reference frame (rest pose)
     ref_d2: Vector3[] = [];
 
-    // Material frame (deformed pose)
-    mat_d1: Vector3[] = [];
+    mat_d1: Vector3[] = []; // Material frame (deformed pose)
     mat_d2: Vector3[] = [];
 
     constructor(
