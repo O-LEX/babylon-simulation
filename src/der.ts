@@ -452,20 +452,42 @@ export class DERSolver {
         return { energy, gradients, hessian };
     }
 
-    // Bending energy computation using discrete curvature
+    // Helper function to compute material frame
+    private computeMaterialFrame(t_prev: Vector3, t_curr: Vector3): { d1_prev: Vector3, d2_prev: Vector3, d1_curr: Vector3, d2_curr: Vector3 } {
+        // Simple material frame computation using cross product with a reference vector
+        let refVector = new Vector3(0, 1, 0); // y-axis as reference
+        
+        // If tangent is too aligned with y-axis, use x-axis instead
+        if (Math.abs(Vector3.Dot(t_prev, refVector)) > 0.9) {
+            refVector = new Vector3(1, 0, 0);
+        }
+        
+        // Compute first material vector
+        const d1_prev = Vector3.Cross(t_prev, refVector).normalize();
+        const d2_prev = Vector3.Cross(t_prev, d1_prev).normalize();
+        
+        // For current frame, try to maintain continuity (simplified approach)
+        const d1_curr = Vector3.Cross(t_curr, refVector).normalize();
+        const d2_curr = Vector3.Cross(t_curr, d1_curr).normalize();
+        
+        return { d1_prev, d2_prev, d1_curr, d2_curr };
+    }
+
+    // Bending energy computation using material frame (Discrete Elastic Rods)
     private computeBendingForces(
-        p0: Vector3, 
-        p1: Vector3, 
-        p2: Vector3,
+        x_prev: Vector3,  // x_{i-1}
+        x_curr: Vector3,  // x_i  
+        x_next: Vector3,  // x_{i+1}
         stiffness: number
     ): { energy: number, gradients: Vector3[], hessian: Matrix3x3[][] } {
-        const e1 = p1.subtract(p0);
-        const e2 = p2.subtract(p1);
+        // Edge vectors
+        const e_prev = x_curr.subtract(x_prev);  // e_{i-1} = x_i - x_{i-1}
+        const e_curr = x_next.subtract(x_curr);  // e_i = x_{i+1} - x_i
         
-        const l1 = e1.length();
-        const l2 = e2.length();
+        const l_prev = e_prev.length();
+        const l_curr = e_curr.length();
         
-        if (l1 < 1e-8 || l2 < 1e-8) {
+        if (l_prev < 1e-8 || l_curr < 1e-8) {
             return {
                 energy: 0,
                 gradients: [new Vector3(0, 0, 0), new Vector3(0, 0, 0), new Vector3(0, 0, 0)],
@@ -477,55 +499,162 @@ export class DERSolver {
             };
         }
         
-        // Normalized tangent vectors
-        const t1 = e1.scale(1.0 / l1);
-        const t2 = e2.scale(1.0 / l2);
+        // Unit tangent vectors
+        const t_prev = e_prev.scale(1.0 / l_prev);  // t_{i-1}
+        const t_curr = e_curr.scale(1.0 / l_curr);  // t_i
         
-        // Discrete curvature vector: κ = 2 * (t2 - t1) / (l1 + l2)
-        const avgLength = (l1 + l2) * 0.5;
-        const kappa = t2.subtract(t1).scale(2.0 / (l1 + l2));
-        const kappaSquared = Vector3.Dot(kappa, kappa);
+        // Angle adjustment coefficient: χ = 1 + t_{i-1} · t_i
+        const chi = 1.0 + Vector3.Dot(t_prev, t_curr);
         
-        // Bending energy: E = (1/2) * EI * |κ|^2 * avgLength
-        const energy = 0.5 * stiffness * kappaSquared * avgLength;
+        if (Math.abs(chi) < 1e-8) {
+            // Nearly parallel case, use simplified energy
+            return {
+                energy: 0,
+                gradients: [new Vector3(0, 0, 0), new Vector3(0, 0, 0), new Vector3(0, 0, 0)],
+                hessian: [
+                    [new Matrix3x3(), new Matrix3x3(), new Matrix3x3()],
+                    [new Matrix3x3(), new Matrix3x3(), new Matrix3x3()],
+                    [new Matrix3x3(), new Matrix3x3(), new Matrix3x3()]
+                ]
+            };
+        }
         
-        // Compute gradients analytically
-        const factor = stiffness * avgLength * 2.0 / (l1 + l2);
+        // Curvature binormal vector: κ_b = 2 * (t_{i-1} × t_i) / χ
+        const cross_t = Vector3.Cross(t_prev, t_curr);
+        const kappa_b = cross_t.scale(2.0 / chi);
         
-        // ∂κ/∂p0 = -2/(l1+l2) * (1/l1 * I - t1⊗t1/l1)
-        const t1OuterT1 = Matrix3x3.outerProduct(t1, t1);
-        const dKappa_dp0_matrix = Matrix3x3.identity().subtract(t1OuterT1).scale(-2.0 / ((l1 + l2) * l1));
-        const grad0 = dKappa_dp0_matrix.multiplyVector(kappa).scale(factor);
+        // Compute material frame
+        const frame = this.computeMaterialFrame(t_prev, t_curr);
         
-        // ∂κ/∂p2 = 2/(l1+l2) * (1/l2 * I - t2⊗t2/l2)  
-        const t2OuterT2 = Matrix3x3.outerProduct(t2, t2);
-        const dKappa_dp2_matrix = Matrix3x3.identity().subtract(t2OuterT2).scale(2.0 / ((l1 + l2) * l2));
-        const grad2 = dKappa_dp2_matrix.multiplyVector(kappa).scale(factor);
+        // Material curvature components:
+        // κ₁ = (1/2)(d²_{i-1} + d²_i) · κ_b
+        // κ₂ = -(1/2)(d¹_{i-1} + d¹_i) · κ_b
+        const d2_avg = frame.d2_prev.add(frame.d2_curr).scale(0.5);
+        const d1_avg = frame.d1_prev.add(frame.d1_curr).scale(0.5);
         
-        // ∂κ/∂p1 = -(∂κ/∂p0 + ∂κ/∂p2)
-        const grad1 = grad0.add(grad2).scale(-1);
+        const kappa1 = Vector3.Dot(d2_avg, kappa_b);
+        const kappa2 = -Vector3.Dot(d1_avg, kappa_b);
+        
+        // Voronoi length: ℓ_i = (|e_{i-1}| + |e_i|) / 2
+        const voronoi_length = (l_prev + l_curr) * 0.5;
+        
+        // Rest curvature (assumed zero for simplicity)
+        const kappa1_rest = 0.0;
+        const kappa2_rest = 0.0;
+        
+        // Bending energy: E_b = (1/(2*ℓ_i)) * [(κ₁-κ₁⁰)² + (κ₂-κ₂⁰)²] * stiffness
+        const kappa1_diff = kappa1 - kappa1_rest;
+        const kappa2_diff = kappa2 - kappa2_rest;
+        const energy = (0.5 / voronoi_length) * stiffness * (kappa1_diff * kappa1_diff + kappa2_diff * kappa2_diff);
+        
+        // Analytical gradient computation following DER theory
+        const energy_factor = stiffness / voronoi_length;
+        
+        // Auxiliary vectors for gradient calculation
+        // t̃ = (t_{i-1} + t_i) / χ
+        const t_tilde = t_prev.add(t_curr).scale(1.0 / chi);
+        
+        // d̃₁ = (d¹_{i-1} + d¹_i) / χ, d̃₂ = (d²_{i-1} + d²_i) / χ  
+        const d1_tilde = frame.d1_prev.add(frame.d1_curr).scale(1.0 / chi);
+        const d2_tilde = frame.d2_prev.add(frame.d2_curr).scale(1.0 / chi);
+        
+        // ===== Gradient of κ₁ w.r.t. edge vectors =====
+        // ∂κ₁/∂e_{i-1} = (1/|e_{i-1}|) * (-κ₁ * t̃ + t_i × d̃₂)
+        const cross_t_curr_d2_tilde = Vector3.Cross(t_curr, d2_tilde);
+        const dKappa1_de_prev = t_tilde.scale(-kappa1).add(cross_t_curr_d2_tilde).scale(1.0 / l_prev);
+        
+        // ∂κ₁/∂e_i = (1/|e_i|) * (-κ₁ * t̃ - t_{i-1} × d̃₂)
+        const cross_t_prev_d2_tilde = Vector3.Cross(t_prev, d2_tilde);
+        const dKappa1_de_curr = t_tilde.scale(-kappa1).subtract(cross_t_prev_d2_tilde).scale(1.0 / l_curr);
+        
+        // ===== Gradient of κ₂ w.r.t. edge vectors =====
+        // ∂κ₂/∂e_{i-1} = (1/|e_{i-1}|) * (-κ₂ * t̃ - t_i × d̃₁)  [note: minus sign from κ₂ = -...]
+        const cross_t_curr_d1_tilde = Vector3.Cross(t_curr, d1_tilde);
+        const dKappa2_de_prev = t_tilde.scale(-kappa2).subtract(cross_t_curr_d1_tilde).scale(1.0 / l_prev);
+        
+        // ∂κ₂/∂e_i = (1/|e_i|) * (-κ₂ * t̃ + t_{i-1} × d̃₁)
+        const cross_t_prev_d1_tilde = Vector3.Cross(t_prev, d1_tilde);
+        const dKappa2_de_curr = t_tilde.scale(-kappa2).add(cross_t_prev_d1_tilde).scale(1.0 / l_curr);
+        
+        // ===== Total energy gradients w.r.t. edge vectors =====
+        // ∂E/∂e_{i-1} = (∂E/∂κ₁)(∂κ₁/∂e_{i-1}) + (∂E/∂κ₂)(∂κ₂/∂e_{i-1})
+        const dE_dKappa1 = energy_factor * kappa1_diff;
+        const dE_dKappa2 = energy_factor * kappa2_diff;
+        
+        const dE_de_prev = dKappa1_de_prev.scale(dE_dKappa1).add(dKappa2_de_prev.scale(dE_dKappa2));
+        const dE_de_curr = dKappa1_de_curr.scale(dE_dKappa1).add(dKappa2_de_curr.scale(dE_dKappa2));
+        
+        // ===== Convert edge gradients to position gradients =====
+        // e_{i-1} = x_i - x_{i-1}, so ∂e_{i-1}/∂x_{i-1} = -I, ∂e_{i-1}/∂x_i = I
+        // e_i = x_{i+1} - x_i, so ∂e_i/∂x_i = -I, ∂e_i/∂x_{i+1} = I
+        
+        const grad0 = dE_de_prev.scale(-1.0);                    // ∂E/∂x_{i-1}
+        const grad1 = dE_de_prev.add(dE_de_curr.scale(-1.0));    // ∂E/∂x_i
+        const grad2 = dE_de_curr;                                // ∂E/∂x_{i+1}
         
         const gradients = [grad0, grad1, grad2];
         
-        // Compute Hessian matrices
-        const hessianFactor = stiffness * avgLength * 4.0 / ((l1 + l2) * (l1 + l2));
-        
-        // Simplified Hessian computation for stability and correctness
-        const baseHessian = Matrix3x3.identity().scale(stiffness * 0.01); // Small regularization
-        const gradientContrib = Matrix3x3.outerProduct(kappa, kappa).scale(hessianFactor);
-        
-        const H00 = baseHessian.add(gradientContrib.scale(1.0 / (l1 * l1)));
-        const H22 = baseHessian.add(gradientContrib.scale(1.0 / (l2 * l2)));
-        const H01 = gradientContrib.scale(-1.0 / l1);
-        const H12 = gradientContrib.scale(-1.0 / l2);
-        const H02 = new Matrix3x3(); // Zero for non-adjacent vertices
-        const H11 = H00.add(H22).add(H01.scale(2)).add(H12.scale(2));
-        
-        const hessian = [
-            [H00, H01, H02],
-            [H01, H11, H12],
-            [H02, H12, H22]
-        ];
+                 // Analytical Hessian computation (main terms)
+         // Full Hessian is extremely complex, so we implement the dominant terms
+         
+         // Base regularization for numerical stability
+         const regularization = Matrix3x3.identity().scale(energy_factor * 0.001);
+         
+         // First-order contribution: ∇κ ⊗ ∇κ terms
+         const first_order_factor = energy_factor;
+         
+         // Hessian contributions from κ₁
+         const dKappa1_dx0 = dKappa1_de_prev.scale(-1.0);
+         const dKappa1_dx1 = dKappa1_de_prev.add(dKappa1_de_curr.scale(-1.0));
+         const dKappa1_dx2 = dKappa1_de_curr;
+         
+         // Hessian contributions from κ₂
+         const dKappa2_dx0 = dKappa2_de_prev.scale(-1.0);
+         const dKappa2_dx1 = dKappa2_de_prev.add(dKappa2_de_curr.scale(-1.0));
+         const dKappa2_dx2 = dKappa2_de_curr;
+         
+         // Combined gradient vectors for each position
+         const grad_vec0 = dKappa1_dx0.scale(dE_dKappa1).add(dKappa2_dx0.scale(dE_dKappa2));
+         const grad_vec1 = dKappa1_dx1.scale(dE_dKappa1).add(dKappa2_dx1.scale(dE_dKappa2));
+         const grad_vec2 = dKappa1_dx2.scale(dE_dKappa1).add(dKappa2_dx2.scale(dE_dKappa2));
+         
+         // First-order Hessian: H_ij = ∇κᵢ · ∇κⱼ * energy_factor
+         const H00 = regularization.add(Matrix3x3.outerProduct(dKappa1_dx0, dKappa1_dx0).scale(first_order_factor))
+                                   .add(Matrix3x3.outerProduct(dKappa2_dx0, dKappa2_dx0).scale(first_order_factor));
+         
+         const H11 = regularization.add(Matrix3x3.outerProduct(dKappa1_dx1, dKappa1_dx1).scale(first_order_factor))
+                                   .add(Matrix3x3.outerProduct(dKappa2_dx1, dKappa2_dx1).scale(first_order_factor));
+         
+         const H22 = regularization.add(Matrix3x3.outerProduct(dKappa1_dx2, dKappa1_dx2).scale(first_order_factor))
+                                   .add(Matrix3x3.outerProduct(dKappa2_dx2, dKappa2_dx2).scale(first_order_factor));
+         
+         // Cross terms
+         const H01 = Matrix3x3.outerProduct(dKappa1_dx0, dKappa1_dx1).scale(first_order_factor)
+                               .add(Matrix3x3.outerProduct(dKappa2_dx0, dKappa2_dx1).scale(first_order_factor));
+         
+         const H02 = Matrix3x3.outerProduct(dKappa1_dx0, dKappa1_dx2).scale(first_order_factor)
+                               .add(Matrix3x3.outerProduct(dKappa2_dx0, dKappa2_dx2).scale(first_order_factor));
+         
+         const H12 = Matrix3x3.outerProduct(dKappa1_dx1, dKappa1_dx2).scale(first_order_factor)
+                               .add(Matrix3x3.outerProduct(dKappa2_dx1, dKappa2_dx2).scale(first_order_factor));
+         
+         // Second-order terms (simplified): curvature-dependent corrections
+         const second_order_factor = energy_factor * 0.1; // Reduced weight for stability
+         const curvature_magnitude = Math.sqrt(kappa1 * kappa1 + kappa2 * kappa2);
+         
+         if (curvature_magnitude > 1e-8) {
+             // Add curvature-dependent stiffening
+             const stiffening = Matrix3x3.identity().scale(second_order_factor * curvature_magnitude);
+             H00.data = H00.add(stiffening).data;
+             H11.data = H11.add(stiffening.scale(2)).data; // Central vertex gets more stiffening
+             H22.data = H22.add(stiffening).data;
+         }
+         
+         const hessian = [
+             [H00, H01, H02],
+             [H01, H11, H12],
+             [H02, H12, H22]
+         ];
         
         return { energy, gradients, hessian };
     }
