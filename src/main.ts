@@ -1,6 +1,7 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
 // import { Solver, createCloth } from "./old";
-import { ImplicitSolver, createChain, createCloth } from "./simulation";
+// import { ImplicitSolver, createChain, createCloth } from "./simulation";
+import { DERSolver, createRod } from "./der";
 
 function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const scene = new Scene(engine);
@@ -12,23 +13,30 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
 
     const fpsDisplay = document.getElementById("fpsDisplay");
 
-    // const geometry = createChain(10, 100);
-    const geometry = createCloth(6, 6, 20, 20, 2000, 0.25);
-    const solver = new ImplicitSolver(geometry);
+    // Simple DER simulation - straight rod
+    const derGeometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
+    const derSolver = new DERSolver(derGeometry);
 
     // Create spheres to visualize nodes
     const sphereSize = 0.1;
     const spheres: Mesh[] = [];
+
+    let currentPositions = derSolver.getPositions();
     
-    for (let i = 0; i < geometry.getNumVertices(); i++) {
+    for (let i = 0; i < derGeometry.getNumVertices(); i++) {
         const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
-        sphere.position = geometry.positions[i].clone();
+        sphere.position = currentPositions[i];
         spheres.push(sphere);
     }
 
+    let edges = MeshBuilder.CreateLines("edges", {
+        points: currentPositions,
+        updatable: true
+    }, scene);
+
     // https://gafferongames.com/post/fix_your_timestep/
     let lastTime = performance.now();
-    const fixedTimeStep = 1/60; // 60Hz physics
+    const fixedTimeStep = 1/60;
     let accumulator = 0;
 
     scene.registerBeforeRender(() => {
@@ -37,14 +45,15 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         lastTime = currentTime;
         accumulator += frameTime;
         while (accumulator >= fixedTimeStep) {
-            solver.step(fixedTimeStep);
+            derSolver.step(fixedTimeStep);
             accumulator -= fixedTimeStep;
         }
         
-        const currentPositions = solver.getPositions();
+        currentPositions = derSolver.getPositions();
         for (let i = 0; i < spheres.length; i++) {
             spheres[i].position.copyFrom(currentPositions[i]);
         }
+        edges.updateVerticesData("position", currentPositions.flatMap((v) => [v.x, v.y, v.z]));
 
         if (fpsDisplay) {
             const fps = engine.getFps().toFixed(1);
