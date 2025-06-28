@@ -1,6 +1,8 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
 import { ImplicitSolver, createChain, createCloth } from "./simulation";
 import { DERSolver, createRod } from "./der";
+// BSM (Block Sparse Matrix) test
+import "./bsm";
 
 function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const scene = new Scene(engine);
