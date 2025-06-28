@@ -220,7 +220,6 @@ function springEnergyGradientHessian(
 
 export interface Geometry {
     positions: Vector3[];
-    initialPositions: Vector3[];
     edges: number[]; // [v0, v1, v2, v3, ...] pairs
     fixedVertices: Set<number>;
     stiffness: number; // Material property
@@ -249,7 +248,7 @@ export class ImplicitSolver {
         for (let i = 0; i < this.getNumEdges(); i++) {
             const v0 = this.edges[i * 2];
             const v1 = this.edges[i * 2 + 1];
-            this.restLengths[i] = Vector3.Distance(geometry.initialPositions[v0], geometry.initialPositions[v1]);
+            this.restLengths[i] = Vector3.Distance(geometry.positions[v0], geometry.positions[v1]);
         }
         
         this.bsm = new BlockSparseMatrix();
@@ -407,7 +406,6 @@ export function createChain(length: number, resolution: number, stiffness: numbe
     
     const geometry = {
         positions: positions,
-        initialPositions: positions.map(p => p.clone()),
         edges: edges,
         fixedVertices: new Set([0]),
         stiffness: stiffness,
@@ -467,7 +465,6 @@ export function createCloth(width: number, height: number, resolutionX: number, 
     
     const geometry = {
         positions: positions,
-        initialPositions: positions.map(p => p.clone()),
         edges: edges,
         fixedVertices: new Set([0, resolutionX]),
         stiffness: stiffness,

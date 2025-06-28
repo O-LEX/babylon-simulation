@@ -223,72 +223,95 @@ function parallelTransport(director: Vector3, t_prev: Vector3, t_curr: Vector3):
     return R.multiplyVector(director).normalize();
 }
 
-// Discrete Elastic Rod geometry with alternating position-theta structure
-export class DERGeometry {
-    q: Vector3[] = []; // Alternating vector: q[2*i] = position[i], q[2*i+1] = theta[i] (x component only)
+export interface DERGeometry {
+    positions: Vector3[]; // Positions of vertices
+    fixedVertices: Set<number>; // Indices of fixed vertices
+    stretchStiffness: number; // Stiffness for stretching
+    bendStiffness: number; // Stiffness for bending
+    twistStiffness: number; // Stiffness for twisting
+    vertexMass: number; // Mass of each vertex
+    radius: number; // Radius of the rod
+}
+
+// Discrete Elastic Rod solver using discrete viscous thread model
+export class DERSolver {
+    private q: Vector3[] = []; // Alternating vector: q[2*i] = position[i], q[2*i+1] = theta[i] (x component only)
     
-    restLengths: number[] = [];        // Rest length for each edge
-    restTwists: number[] = [];         // Rest twist for each edge  
-    restCurvatures: Vector3[] = [];    // Rest curvature for each edge
+    private restLengths: number[] = [];        // Rest length for each edge
+    private restTwists: number[] = [];         // Rest twist for each edge  
+    private restCurvatures: Vector3[] = [];    // Rest curvature for each edge
     
-    fixedBlocks: Set<number>; // Fixed blocks in q vector
+    private fixedBlocks: Set<number>; // Fixed blocks in q vector
     
-    // Material properties
-    stretchStiffness: number;
-    bendStiffness: number;
-    twistStiffness: number;
-    vertexMass: number;
-    radius: number; // Rod radius
+    // Material properties (copied from interface)
+    private stretchStiffness: number;
+    private bendStiffness: number;
+    private twistStiffness: number;
+    private vertexMass: number;
+    private radius: number; // Rod radius
 
-    tangents: Vector3[] = []; // Normalized tangent vectors for each edge
+    private tangents: Vector3[] = []; // Normalized tangent vectors for each edge
 
-    ref_d1: Vector3[] = []; // Reference frame (rest pose)
-    ref_d2: Vector3[] = [];
+    private ref_d1: Vector3[] = []; // Reference frame (rest pose)
+    private ref_d2: Vector3[] = [];
 
-    mat_d1: Vector3[] = []; // Material frame (deformed pose)
-    mat_d2: Vector3[] = [];
+    private mat_d1: Vector3[] = []; // Material frame (deformed pose)
+    private mat_d2: Vector3[] = [];
 
-    constructor(
-        positions: Vector3[], 
-        thetas: number[],
-        stretchStiffness: number = 1000,
-        bendStiffness: number = 100,
-        twistStiffness: number = 100,
-        vertexMass: number = 1.0,
-        radius: number = 0.1
-    ) {
-        for (let i = 0; i < positions.length; i++) {
-            this.q.push(positions[i].clone());
-            this.q.push(new Vector3(thetas[i], 0, 0));
+    private bsm: BlockSparseMatrix;
+    private velocities: Vector3[]; // Velocities for q vector
+    private gravity: Vector3 = new Vector3(0, -9.81, 0);
+
+    constructor(geometry: DERGeometry) {
+        // Copy material properties
+        this.stretchStiffness = geometry.stretchStiffness;
+        this.bendStiffness = geometry.bendStiffness;
+        this.twistStiffness = geometry.twistStiffness;
+        this.vertexMass = geometry.vertexMass;
+        this.radius = geometry.radius;
+        
+        // Build q vector from positions (theta initialized to 0)
+        for (let i = 0; i < geometry.positions.length; i++) {
+            this.q.push(geometry.positions[i].clone());
+            this.q.push(new Vector3(0, 0, 0)); // theta = 0 (x component only)
         }
         
+        // Initialize fixed blocks from fixed vertices
         this.fixedBlocks = new Set();
-        this.stretchStiffness = stretchStiffness;
-        this.bendStiffness = bendStiffness;
-        this.twistStiffness = twistStiffness;
-        this.vertexMass = vertexMass;
-        this.radius = radius;
+        for (const vertexIndex of geometry.fixedVertices) {
+            this.fixedBlocks.add(this.getPositionBlockIndex(vertexIndex));
+            this.fixedBlocks.add(this.getThetaBlockIndex(vertexIndex));
+        }
         
-        this.createElementData(positions);
-        this.updateTangents();
-        this.updateReferenceFrames();
-        this.updateMaterialFrames();
-    }
-
-    private createElementData(positions: Vector3[]): void {
-        const numEdges = positions.length - 1;
+        // Compute rest states from initial positions
+        const numEdges = geometry.positions.length - 1;
         this.restLengths = new Array(numEdges);
         this.restTwists = new Array(numEdges);
         this.restCurvatures = new Array(numEdges);
         
         for (let i = 0; i < numEdges; i++) {
-            this.restLengths[i] = Vector3.Distance(positions[i], positions[i + 1]);
+            this.restLengths[i] = Vector3.Distance(geometry.positions[i], geometry.positions[i + 1]);
             this.restTwists[i] = 0; // Initial twist
             this.restCurvatures[i] = new Vector3(0, 0, 0); // Initial curvature
         }
+
+        this.updateTangents();
+        this.updateReferenceFrames();
+        this.updateMaterialFrames();
+        
+        // Initialize solver components
+        this.bsm = new BlockSparseMatrix();
+        
+        // Create sparse matrix structure for q vector
+        const structure = this.createSparseMatrixStructure();
+        this.bsm.initialize(structure.row2idx, structure.idx2col);
+        
+        // Initialize velocities to zero for all blocks in q
+        this.velocities = new Array(this.getNumBlocks())
+            .fill(null).map(() => new Vector3(0, 0, 0));
     }
 
-    updateTangents() {
+    private updateTangents() {
         this.tangents = [];
         for (let i = 0; i < this.q.length / 2 - 1; i++) {
             const x0 = this.q[2 * i];
@@ -298,7 +321,7 @@ export class DERGeometry {
         }
     }
 
-    updateReferenceFrames() {
+    private updateReferenceFrames() {
         this.ref_d1 = [];
         this.ref_d2 = [];
 
@@ -322,8 +345,7 @@ export class DERGeometry {
         }
     }
 
-
-    updateMaterialFrames() {
+    private updateMaterialFrames() {
         for (let i = 0; i < this.tangents.length; i++) {
             const t = this.tangents[i];
             const theta = this.q[2 * i + 1].x;
@@ -339,108 +361,58 @@ export class DERGeometry {
     }
 
     // Convert vertex index to position block index in q
-    getPositionBlockIndex(vertexIndex: number): number {
+    private getPositionBlockIndex(vertexIndex: number): number {
         return 2 * vertexIndex;
     }
 
     // Convert vertex index to theta block index in q
-    getThetaBlockIndex(vertexIndex: number): number {
+    private getThetaBlockIndex(vertexIndex: number): number {
         return 2 * vertexIndex + 1;
     }
 
     // Get position from q vector
-    getPosition(vertexIndex: number): Vector3 {
+    private getPosition(vertexIndex: number): Vector3 {
         return this.q[this.getPositionBlockIndex(vertexIndex)];
     }
 
     // Get theta value from q vector
-    getTheta(vertexIndex: number): number {
+    private getTheta(vertexIndex: number): number {
         return this.q[this.getThetaBlockIndex(vertexIndex)].x;
     }
 
     // Set position in q vector
-    setPosition(vertexIndex: number, position: Vector3): void {
+    private setPosition(vertexIndex: number, position: Vector3): void {
         this.q[this.getPositionBlockIndex(vertexIndex)] = position.clone();
     }
 
     // Set theta in q vector
-    setTheta(vertexIndex: number, theta: number): void {
+    private setTheta(vertexIndex: number, theta: number): void {
         this.q[this.getThetaBlockIndex(vertexIndex)] = new Vector3(theta, 0, 0);
     }
 
-    setFixedVertex(vertexIndex: number): void {
-        this.fixedBlocks.add(this.getPositionBlockIndex(vertexIndex));
-        this.fixedBlocks.add(this.getThetaBlockIndex(vertexIndex));
-    }
-
-    setFixedVertices(vertexIndices: number[]): void {
-        for (const index of vertexIndices) {
-            this.setFixedVertex(index);
-        }
-    }
-
-    isBlockFixed(blockIndex: number): boolean {
+    private isBlockFixed(blockIndex: number): boolean {
         return this.fixedBlocks.has(blockIndex);
     }
 
-    isVertexFixed(vertexIndex: number): boolean {
+    private isVertexFixed(vertexIndex: number): boolean {
         return this.fixedBlocks.has(this.getPositionBlockIndex(vertexIndex));
     }
 
-    getNumVertices(): number {
+    private getNumVertices(): number {
         return this.q.length / 2;
     }
 
-    getNumBlocks(): number {
+    private getNumBlocks(): number {
         return this.q.length;
     }
 
-    getNumElements(): number {
+    private getNumElements(): number {
         return this.restLengths.length;
     }
 
-    // Get all positions as Vector3 array
-    getPositions(): Vector3[] {
-        const positions = [];
-        for (let i = 0; i < this.getNumVertices(); i++) {
-            positions.push(this.getPosition(i));
-        }
-        return positions;
-    }
-
-    // Get all thetas as number array
-    getThetas(): number[] {
-        const thetas = [];
-        for (let i = 0; i < this.getNumVertices(); i++) {
-            thetas.push(this.getTheta(i));
-        }
-        return thetas;
-    }
-}
-
-// Discrete Elastic Rod solver using discrete viscous thread model
-export class DERSolver {
-    private geometry: DERGeometry;
-    private bsm: BlockSparseMatrix;
-    private velocities: Vector3[]; // Velocities for q vector
-    private gravity: Vector3 = new Vector3(0, -9.81, 0);
-
-    constructor(geometry: DERGeometry) {
-        this.geometry = geometry;
-        this.bsm = new BlockSparseMatrix();
-        
-        // Create sparse matrix structure for q vector
-        const structure = this.createSparseMatrixStructure(geometry);
-        this.bsm.initialize(structure.row2idx, structure.idx2col);
-        
-        // Initialize velocities to zero for all blocks in q
-        this.velocities = new Array(geometry.getNumBlocks())
-            .fill(null).map(() => new Vector3(0, 0, 0));
-    }
-
-    private createSparseMatrixStructure(geometry: DERGeometry): { row2idx: number[], idx2col: number[] } {
-        const numBlocks = geometry.getNumBlocks();
-        const numVertices = geometry.getNumVertices();
+    private createSparseMatrixStructure(): { row2idx: number[], idx2col: number[] } {
+        const numBlocks = this.getNumBlocks();
+        const numVertices = this.getNumVertices();
         const adjacency = new Map<number, Set<number>>();
         
         // Initialize adjacency lists
@@ -449,11 +421,11 @@ export class DERSolver {
         }
         
         // Add element connections for positions (edges connect consecutive vertices)
-        for (let i = 0; i < geometry.getNumElements(); i++) {
+        for (let i = 0; i < this.getNumElements(); i++) {
             const v0 = i;
             const v1 = i + 1;
-            const blockV0 = geometry.getPositionBlockIndex(v0);
-            const blockV1 = geometry.getPositionBlockIndex(v1);
+            const blockV0 = this.getPositionBlockIndex(v0);
+            const blockV1 = this.getPositionBlockIndex(v1);
             adjacency.get(blockV0)!.add(blockV1);
             adjacency.get(blockV1)!.add(blockV0);
         }
@@ -463,8 +435,8 @@ export class DERSolver {
             for (let j = i; j <= i + 2; j++) {
                 for (let k = i; k <= i + 2; k++) {
                     if (j < numVertices && k < numVertices) {
-                        const blockJ = geometry.getPositionBlockIndex(j);
-                        const blockK = geometry.getPositionBlockIndex(k);
+                        const blockJ = this.getPositionBlockIndex(j);
+                        const blockK = this.getPositionBlockIndex(k);
                         adjacency.get(blockJ)!.add(blockK);
                     }
                 }
@@ -476,10 +448,10 @@ export class DERSolver {
             for (let j = i; j <= i + 2; j++) {
                 for (let k = i; k <= i + 2; k++) {
                     if (j < numVertices && k < numVertices) {
-                        const posJ = geometry.getPositionBlockIndex(j);
-                        const posK = geometry.getPositionBlockIndex(k);
-                        const thetaJ = geometry.getThetaBlockIndex(j);
-                        const thetaK = geometry.getThetaBlockIndex(k);
+                        const posJ = this.getPositionBlockIndex(j);
+                        const posK = this.getPositionBlockIndex(k);
+                        const thetaJ = this.getThetaBlockIndex(j);
+                        const thetaK = this.getThetaBlockIndex(k);
                         
                         // Position-position connections
                         adjacency.get(posJ)!.add(posK);
@@ -852,37 +824,37 @@ export class DERSolver {
     }
 
     step(deltaTime: number): void {
-        const numBlocks = this.geometry.getNumBlocks();
-        const numVertices = this.geometry.getNumVertices();
+        const numBlocks = this.getNumBlocks();
+        const numVertices = this.getNumVertices();
         const gradient = new Array(numBlocks).fill(null).map(() => new Vector3(0, 0, 0));
         
         this.bsm.setZero();
         
         // Step 1: Update q using current velocities
         for (let i = 0; i < numBlocks; i++) {
-            if (!this.geometry.isBlockFixed(i)) {
-                this.geometry.q[i].addInPlace(this.velocities[i].scale(deltaTime));
+            if (!this.isBlockFixed(i)) {
+                this.q[i].addInPlace(this.velocities[i].scale(deltaTime));
             }
         }
         
         let totalEnergy = 0;
         
         // Step 2: Process stretching forces
-        for (let i = 0; i < this.geometry.getNumElements(); i++) {
+        for (let i = 0; i < this.getNumElements(); i++) {
             const v0 = i;      // First vertex of edge i
             const v1 = i + 1;  // Second vertex of edge i
             
             const result = this.computeStretchingForces(
-                this.geometry.getPosition(v0),
-                this.geometry.getPosition(v1),
-                this.geometry.restLengths[i],
-                this.geometry.stretchStiffness
+                this.getPosition(v0),
+                this.getPosition(v1),
+                this.restLengths[i],
+                this.stretchStiffness
             );
             
             totalEnergy += result.energy;
             
-            const pos0Block = this.geometry.getPositionBlockIndex(v0);
-            const pos1Block = this.geometry.getPositionBlockIndex(v1);
+            const pos0Block = this.getPositionBlockIndex(v0);
+            const pos1Block = this.getPositionBlockIndex(v1);
             
             gradient[pos0Block].addInPlace(result.gradients[0]);
             gradient[pos1Block].addInPlace(result.gradients[1]);
@@ -896,17 +868,17 @@ export class DERSolver {
         // Step 3: Process bending forces
         for (let i = 0; i < numVertices - 2; i++) {
             const result = this.computeBendingForces(
-                this.geometry.getPosition(i),
-                this.geometry.getPosition(i + 1),
-                this.geometry.getPosition(i + 2),
-                this.geometry.bendStiffness
+                this.getPosition(i),
+                this.getPosition(i + 1),
+                this.getPosition(i + 2),
+                this.bendStiffness
             );
             
             totalEnergy += result.energy;
             
-            const pos0Block = this.geometry.getPositionBlockIndex(i);
-            const pos1Block = this.geometry.getPositionBlockIndex(i + 1);
-            const pos2Block = this.geometry.getPositionBlockIndex(i + 2);
+            const pos0Block = this.getPositionBlockIndex(i);
+            const pos1Block = this.getPositionBlockIndex(i + 1);
+            const pos2Block = this.getPositionBlockIndex(i + 2);
             
             gradient[pos0Block].addInPlace(result.gradients[0]);
             gradient[pos1Block].addInPlace(result.gradients[1]);
@@ -925,23 +897,23 @@ export class DERSolver {
         /*
         for (let i = 0; i < numVertices - 2; i++) {
             const result = this.computeTwistingForces(
-                this.geometry.getPosition(i),
-                this.geometry.getPosition(i + 1),
-                this.geometry.getPosition(i + 2),
-                this.geometry.getTheta(i),
-                this.geometry.getTheta(i + 1),
-                this.geometry.getTheta(i + 2),
-                this.geometry.twistStiffness
+                this.getPosition(i),
+                this.getPosition(i + 1),
+                this.getPosition(i + 2),
+                this.getTheta(i),
+                this.getTheta(i + 1),
+                this.getTheta(i + 2),
+                this.twistStiffness
             );
             
             totalEnergy += result.energy;
             
-            const pos0Block = this.geometry.getPositionBlockIndex(i);
-            const pos1Block = this.geometry.getPositionBlockIndex(i + 1);
-            const pos2Block = this.geometry.getPositionBlockIndex(i + 2);
-            const theta0Block = this.geometry.getThetaBlockIndex(i);
-            const theta1Block = this.geometry.getThetaBlockIndex(i + 1);
-            const theta2Block = this.geometry.getThetaBlockIndex(i + 2);
+            const pos0Block = this.getPositionBlockIndex(i);
+            const pos1Block = this.getPositionBlockIndex(i + 1);
+            const pos2Block = this.getPositionBlockIndex(i + 2);
+            const theta0Block = this.getThetaBlockIndex(i);
+            const theta1Block = this.getThetaBlockIndex(i + 1);
+            const theta2Block = this.getThetaBlockIndex(i + 2);
             
             // Add position gradients
             gradient[pos0Block].addInPlace(result.positionGradients[0]);
@@ -982,12 +954,12 @@ export class DERSolver {
         */
         
         // Step 5: Add mass matrix (only for position blocks)
-        const massMatrix = Matrix3x3.identity().scale(this.geometry.vertexMass / (deltaTime * deltaTime));
-        const thetaInertiaMatrix = Matrix3x3.identity().scale(this.geometry.vertexMass * this.geometry.radius * this.geometry.radius / (deltaTime * deltaTime));
+        const massMatrix = Matrix3x3.identity().scale(this.vertexMass / (deltaTime * deltaTime));
+        const thetaInertiaMatrix = Matrix3x3.identity().scale(this.vertexMass * this.radius * this.radius / (deltaTime * deltaTime));
         
         for (let i = 0; i < numVertices; i++) {
-            const posBlock = this.geometry.getPositionBlockIndex(i);
-            const thetaBlock = this.geometry.getThetaBlockIndex(i);
+            const posBlock = this.getPositionBlockIndex(i);
+            const thetaBlock = this.getThetaBlockIndex(i);
             
             this.bsm.addBlockAt(posBlock, posBlock, massMatrix);
             this.bsm.addBlockAt(thetaBlock, thetaBlock, thetaInertiaMatrix);
@@ -995,13 +967,13 @@ export class DERSolver {
         
         // Step 6: Add gravity forces (only for position blocks)
         for (let i = 0; i < numVertices; i++) {
-            const posBlock = this.geometry.getPositionBlockIndex(i);
-            gradient[posBlock].subtractInPlace(this.gravity.scale(this.geometry.vertexMass));
-            totalEnergy -= this.geometry.vertexMass * Vector3.Dot(this.gravity, this.geometry.getPosition(i));
+            const posBlock = this.getPositionBlockIndex(i);
+            gradient[posBlock].subtractInPlace(this.gravity.scale(this.vertexMass));
+            totalEnergy -= this.vertexMass * Vector3.Dot(this.gravity, this.getPosition(i));
         }
         
         // Step 7: Handle fixed blocks
-        for (const fixedBlock of this.geometry.fixedBlocks) {
+        for (const fixedBlock of this.fixedBlocks) {
             gradient[fixedBlock] = new Vector3(0, 0, 0);
             this.velocities[fixedBlock] = new Vector3(0, 0, 0);
             this.bsm.setFixed(fixedBlock);
@@ -1012,27 +984,48 @@ export class DERSolver {
         
         // Step 9: Update velocities and q
         for (let i = 0; i < numBlocks; i++) {
-            if (!this.geometry.isBlockFixed(i)) {
+            if (!this.isBlockFixed(i)) {
                 this.velocities[i].subtractInPlace(delta[i].scale(1 / deltaTime));
-                this.geometry.q[i].subtractInPlace(delta[i]);
+                this.q[i].subtractInPlace(delta[i]);
             }
         }
     }
 
+    // Public methods to get current state
+    getNumPositions(): number {
+        return this.getNumVertices();
+    }
+
     getPositions(): Vector3[] {
-        return this.geometry.getPositions();
+        const positions = [];
+        for (let i = 0; i < this.getNumVertices(); i++) {
+            positions.push(this.getPosition(i));
+        }
+        return positions;
+    }
+
+    getEdges(): [number, number][] {
+        const edges: [number, number][] = [];
+        for (let i = 0; i < this.getNumElements(); i++) {
+            edges.push([i, i + 1]); // Edge from vertex i to vertex i+1
+        }
+        return edges;
     }
 
     getThetas(): number[] {
-        return this.geometry.getThetas();
+        const thetas = [];
+        for (let i = 0; i < this.getNumVertices(); i++) {
+            thetas.push(this.getTheta(i));
+        }
+        return thetas;
     }
 
     getQ(): Vector3[] {
-        return this.geometry.q.map(q => q.clone());
+        return this.q.map(q => q.clone());
     }
 }
 
-// Utility function to create a simple rod
+// Utility function to create a simple rod geometry
 export function createRod(
     numVertices: number, 
     length: number = 5.0,
@@ -1043,27 +1036,25 @@ export function createRod(
     radius: number = 0.1
 ): DERGeometry {
     const positions = [];
-    const thetas = [];
     
     // Create straight rod along x-axis
     for (let i = 0; i < numVertices; i++) {
         const x = (i / (numVertices - 1)) * length;
         positions.push(new Vector3(x, 5, 0));
-        thetas.push(0); // Initial twist angles
     }
     
-    const geometry = new DERGeometry(
-        positions, 
-        thetas,
+    const fixedVertices = new Set<number>();
+    fixedVertices.add(0); // Fix one end of the rod
+    
+    const geometry: DERGeometry = {
+        positions,
+        fixedVertices,
         stretchStiffness,
         bendStiffness,
         twistStiffness,
         vertexMass,
         radius
-    );
-    
-    // Fix one end of the rod
-    geometry.setFixedVertex(0);
+    };
     
     return geometry;
 }

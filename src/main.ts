@@ -1,5 +1,4 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
-// import { Solver, createCloth } from "./old";
 import { ImplicitSolver, createChain, createCloth } from "./simulation";
 import { DERSolver, createRod } from "./der";
 
@@ -33,53 +32,29 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         sphereSize = 0.05;
     } else {
         // Default to DER rod
-        // geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
-        // solver = new DERSolver(geometry);
-        geometry = createCloth(5, 5, 10, 10, 1000, 1.0);
-        solver = new ImplicitSolver(geometry);
+        geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
+        solver = new DERSolver(geometry);
         sphereSize = 0.05;
     }
 
     // Create spheres to visualize nodes
     const spheres: Mesh[] = [];
-
     let currentPositions = solver.getPositions();
-    
-    for (let i = 0; i < solver.getNumPositions(); i++) {
+    for (let i = 0; i < currentPositions.length; i++) {
         const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
         sphere.position = currentPositions[i];
         spheres.push(sphere);
     }
 
-    // Create edges based on simulation type
-    let edges: Mesh | Mesh[];
-    let edgeUpdateType: 'single' | 'multiple';
-
-    if (simulationType === "cloth") {
-        // Cloth: Create individual lines for each edge
-        const edgeList = solver.getEdges();
-        const edgeLines: Mesh[] = [];
-        
-        for (let i = 0; i < edgeList.length; i++) {
-            const [v0, v1] = edgeList[i];
-            const line = MeshBuilder.CreateLines(`edge${i}`, {
-                points: [currentPositions[v0], currentPositions[v1]],
-                updatable: true
-            }, scene);
-            edgeLines.push(line);
-        }
-        
-        edges = edgeLines;
-        edgeUpdateType = 'multiple';
-    } else {
-        // DER Rod & Chain: Single continuous line
-        const singleLine = MeshBuilder.CreateLines("edges", {
-            points: currentPositions,
+    let lines: Mesh[] = [];
+    let currentEdges = solver.getEdges();
+    for (let i = 0; i < currentEdges.length; i++) {
+        const [v0, v1] = currentEdges[i];
+        const line = MeshBuilder.CreateLines(`line${i}`, {
+            points: [currentPositions[v0], currentPositions[v1]],
             updatable: true
         }, scene);
-        
-        edges = singleLine;
-        edgeUpdateType = 'single';
+        lines.push(line);
     }
 
     // https://gafferongames.com/post/fix_your_timestep/
@@ -102,23 +77,13 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
             spheres[i].position.copyFrom(currentPositions[i]);
         }
         
-        // Update edges based on type
-        if (edgeUpdateType === 'single') {
-            // Single continuous line (DER Rod & Chain)
-            (edges as Mesh).updateVerticesData("position", currentPositions.flatMap((v: Vector3) => [v.x, v.y, v.z]));
-        } else {
-            // Multiple individual lines (Cloth)
-            const edgeList = solver.getEdges();
-            const edgeLines = edges as Mesh[];
-            
-            for (let i = 0; i < edgeList.length; i++) {
-                const [v0, v1] = edgeList[i];
-                const lineData = [
-                    currentPositions[v0].x, currentPositions[v0].y, currentPositions[v0].z,
-                    currentPositions[v1].x, currentPositions[v1].y, currentPositions[v1].z
-                ];
-                edgeLines[i].updateVerticesData("position", lineData);
-            }
+        for (let i = 0; i < currentEdges.length; i++) {
+            const [v0, v1] = currentEdges[i];
+            const lineData = [
+                currentPositions[v0].x, currentPositions[v0].y, currentPositions[v0].z,
+                currentPositions[v1].x, currentPositions[v1].y, currentPositions[v1].z
+            ];
+            lines[i].updateVerticesData("position", lineData);
         }
 
         if (fpsDisplay) {
