@@ -3,6 +3,7 @@ import { ImplicitSolver, createChain, createCloth } from "./simulation";
 import { DERSolver, createRod, createLShapedRod } from "./der2";
 // BSM (Block Sparse Matrix) test
 import "./bsm";
+import "./simpleder";
 
 function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
     const scene = new Scene(engine);
