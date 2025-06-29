@@ -34,7 +34,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         sphereSize = 0.05;
     } else {
         // Default to DER rod
-        geometry = createRod(10, 3.0, 1, 1, 1, 0.01, 0.1);
+        geometry = createRod(10, 3.0, 100, 1, 1, 0.01, 0.1);
         solver = new DERSolver(geometry);
         sphereSize = 0.05;
     }

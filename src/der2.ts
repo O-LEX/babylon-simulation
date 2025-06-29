@@ -1,6 +1,75 @@
 import { Vector3 } from "@babylonjs/core";
 import { SymmetricBlockSparseMatrix, Matrix } from "./bsm";
 
+// --- Utility Functions for 3D Math ---
+
+/**
+ * Creates a 3x3 rotation matrix using Rodrigues' rotation formula.
+ * @param axis The rotation axis (must be a unit vector).
+ * @param angle The rotation angle in radians.
+ * @returns A 3x3 rotation matrix.
+ */
+function createRotationMatrix(axis: Vector3, angle: number): Matrix {
+    const cos_a = Math.cos(angle);
+    const sin_a = Math.sin(angle);
+    const one_minus_cos = 1.0 - cos_a;
+
+    const x = axis.x;
+    const y = axis.y;
+    const z = axis.z;
+
+    const data = [
+        // Row 1
+        cos_a + x * x * one_minus_cos,
+        x * y * one_minus_cos - z * sin_a,
+        x * z * one_minus_cos + y * sin_a,
+        // Row 2
+        y * x * one_minus_cos + z * sin_a,
+        cos_a + y * y * one_minus_cos,
+        y * z * one_minus_cos - x * sin_a,
+        // Row 3
+        z * x * one_minus_cos - y * sin_a,
+        z * y * one_minus_cos + x * sin_a,
+        cos_a + z * z * one_minus_cos
+    ];
+
+    return new Matrix(3, 3, data);
+}
+
+/**
+ * Creates a 3x3 matrix from the outer product of two vectors.
+ * @param a The first vector.
+ * @param b The second vector.
+ * @returns A 3x3 matrix.
+ */
+function createOuterProductMatrix(a: Vector3, b: Vector3): Matrix {
+    const data = [
+        a.x * b.x, a.x * b.y, a.x * b.z,
+        a.y * b.x, a.y * b.y, a.y * b.z,
+        a.z * b.x, a.z * b.y, a.z * b.z
+    ];
+    return new Matrix(3, 3, data);
+}
+
+/**
+ * Multiplies a 3x3 Matrix by a Vector3.
+ * @param matrix The 3x3 matrix to multiply.
+ * @param v The vector to multiply.
+ * @returns The transformed vector.
+ */
+function multiplyMatrixVector(matrix: Matrix, v: Vector3): Vector3 {
+    if (matrix.rows !== 3 || matrix.cols !== 3) {
+        throw new Error("Matrix must be 3x3 to multiply with a Vector3.");
+    }
+    const data = matrix.data;
+    return new Vector3(
+        data[0] * v.x + data[1] * v.y + data[2] * v.z,
+        data[3] * v.x + data[4] * v.y + data[5] * v.z,
+        data[6] * v.x + data[7] * v.y + data[8] * v.z
+    );
+}
+
+
 export interface DERGeometry {
     positions: Vector3[]; // Positions of vertices
     fixedVertices: Set<number>; // Indices of fixed vertices
@@ -32,6 +101,13 @@ export class DERSolver {
     private bsm: SymmetricBlockSparseMatrix;
     private gravity: Vector3 = new Vector3(0, -9.81, 0);
 
+    // Frame data
+    private tangents: Vector3[] = [];
+    private ref_d1: Vector3[] = [];
+    private ref_d2: Vector3[] = [];
+    private mat_d1: Vector3[] = [];
+    private mat_d2: Vector3[] = [];
+
     // Block boundaries for the sparse matrix
     private boundaries: number[] = [];
     private fixedBlockIndices: Set<number>;
@@ -51,7 +127,12 @@ export class DERSolver {
         // 2. Compute rest state values
         this.computeRestState(geometry);
 
-        // 3. Initialize the Symmetric Block Sparse Matrix
+        // 3. Initialize frames
+        this.updateTangents();
+        this.updateReferenceFrames();
+        this.updateMaterialFrames();
+
+        // 4. Initialize the Symmetric Block Sparse Matrix
         this.bsm = new SymmetricBlockSparseMatrix();
         const structure = this.createSparseMatrixStructure();
         this.bsm.initialize(this.boundaries, structure.row2idx, structure.idx2col);
@@ -153,26 +234,225 @@ export class DERSolver {
         return { row2idx, idx2col };
     }
 
-    // Helper to get a position vector from the flat q array
+    // --- Helper Functions to access state ---
+
+    private getNumVertices(): number {
+        return (this.boundaries.length - 1) / 2;
+    }
+
+    private getNumEdges(): number {
+        return this.getNumVertices() - 1;
+    }
+
     private getPosition(vertexIndex: number): Vector3 {
         const blockIndex = 2 * vertexIndex;
         const dofIndex = this.boundaries[blockIndex];
         return new Vector3(this.q[dofIndex], this.q[dofIndex + 1], this.q[dofIndex + 2]);
     }
 
-    // Helper to get a theta value from the flat q array
     private getTheta(vertexIndex: number): number {
         const blockIndex = 2 * vertexIndex + 1;
         const dofIndex = this.boundaries[blockIndex];
         return this.q[dofIndex];
     }
 
-    private getNumVertices(): number {
-        return (this.boundaries.length - 1) / 2;
+    // --- Frame Computation ---
+
+    /**
+     * Updates the tangent vectors for each edge based on current positions.
+     */
+    private updateTangents() {
+        this.tangents = [];
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const p0 = this.getPosition(i);
+            const p1 = this.getPosition(i + 1);
+            this.tangents.push(p1.subtract(p0).normalize());
+        }
     }
 
-    private getNumElements(): number {
-        return this.getNumVertices() - 1;
+    /**
+     * Transports a vector along the rod without twisting.
+     */
+    private parallelTransport(vectorToTransport: Vector3, t_prev: Vector3, t_curr: Vector3): Vector3 {
+        const axis = Vector3.Cross(t_prev, t_curr);
+        const axis_len = axis.length();
+
+        if (axis_len < 1e-8) {
+            return vectorToTransport.clone(); // No rotation needed
+        }
+
+        const angle = Math.acos(Vector3.Dot(t_prev, t_curr));
+        const R = createRotationMatrix(axis.normalize(), angle);
+        return multiplyMatrixVector(R, vectorToTransport);
+    }
+
+    /**
+     * Updates the reference frames (d1, d2) along the rod.
+     */
+    private updateReferenceFrames() {
+        this.ref_d1 = [];
+        this.ref_d2 = [];
+
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const t = this.tangents[i];
+            let d1: Vector3;
+
+            if (i === 0) {
+                // For the first edge, create an arbitrary frame
+                const up = Math.abs(Vector3.Dot(t, Vector3.Up())) > 0.9 ? Vector3.Right() : Vector3.Up();
+                d1 = Vector3.Cross(t, up).normalize();
+            } else {
+                // For subsequent edges, parallel transport the previous frame
+                const d1_prev = this.ref_d1[i - 1];
+                const t_prev = this.tangents[i - 1];
+                d1 = this.parallelTransport(d1_prev, t_prev, t);
+            }
+            const d2 = Vector3.Cross(t, d1).normalize();
+            this.ref_d1.push(d1);
+            this.ref_d2.push(d2);
+        }
+    }
+
+    /**
+     * Updates the material frames based on the reference frames and twist angles (theta).
+     */
+    private updateMaterialFrames() {
+        this.mat_d1 = [];
+        this.mat_d2 = [];
+        for (let i = 0; i < this.getNumEdges(); i++) {
+            const t = this.tangents[i];
+            const theta = this.getTheta(i); // Twist at the start of the edge
+            const d1_ref = this.ref_d1[i];
+
+            // Rotate the reference frame by the twist angle
+            const R_twist = createRotationMatrix(t, theta);
+            const d1_mat = multiplyMatrixVector(R_twist, d1_ref);
+            const d2_mat = Vector3.Cross(t, d1_mat);
+
+            this.mat_d1.push(d1_mat);
+            this.mat_d2.push(d2_mat);
+        }
+    }
+
+    // --- Force Computations ---
+
+    /**
+     * Computes bending forces, gradients, and Hessians for a single vertex.
+     * Based on the Discrete Elastic Rods model.
+     * @param vertexIndex The index of the central vertex (x_i) for the bend.
+     * @param stiffness The bending stiffness coefficient.
+     */
+    private computeBendingForces(
+        vertexIndex: number, // This is the index `i` of the central vertex x_i
+        stiffness: number
+    ): {
+        energy: number;
+        gradient: number[]; // A 9-element array for forces on x_{i-1}, x_i, x_{i+1}
+        hessianBlocks: Matrix[][]; // 3x3 grid of 3x3 matrices
+    } {
+        // Get positions of the three vertices forming the bend
+        const x_prev = this.getPosition(vertexIndex - 1);
+        const x_curr = this.getPosition(vertexIndex);
+        const x_next = this.getPosition(vertexIndex + 1);
+
+        // Edge vectors
+        const e_prev = x_curr.subtract(x_prev); // e_{i-1}
+        const e_curr = x_next.subtract(x_curr); // e_i
+
+        const l_prev = e_prev.length();
+        const l_curr = e_curr.length();
+
+        const zeros = {
+            energy: 0,
+            gradient: [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            hessianBlocks: Array(3).fill(null).map(() => Array(3).fill(new Matrix(3, 3)))
+        };
+
+        if (l_prev < 1e-8 || l_curr < 1e-8) {
+            return zeros;
+        }
+
+        // Tangents (already computed)
+        const t_prev = this.tangents[vertexIndex - 1];
+        const t_curr = this.tangents[vertexIndex];
+
+        // Curvature binormal
+        const chi = 1.0 + Vector3.Dot(t_prev, t_curr);
+        if (Math.abs(chi) < 1e-8) {
+            return zeros;
+        }
+        const kappa_b = Vector3.Cross(t_prev, t_curr).scale(2.0 / chi);
+
+        // Material frames (already computed)
+        const d1_prev = this.mat_d1[vertexIndex - 1];
+        const d2_prev = this.mat_d2[vertexIndex - 1];
+        const d1_curr = this.mat_d1[vertexIndex];
+        const d2_curr = this.mat_d2[vertexIndex];
+
+        // Material curvature components
+        const kappa1 = 0.5 * Vector3.Dot(d2_prev.add(d2_curr), kappa_b);
+        const kappa2 = -0.5 * Vector3.Dot(d1_prev.add(d1_curr), kappa_b);
+
+        // Rest curvature (assumed zero for now)
+        const kappa1_rest = 0.0;
+        const kappa2_rest = 0.0;
+
+        const kappa1_diff = kappa1 - kappa1_rest;
+        const kappa2_diff = kappa2 - kappa2_rest;
+
+        // Voronoi length
+        const voronoi_length = (l_prev + l_curr) * 0.5;
+        if (voronoi_length < 1e-8) {
+            return zeros;
+        }
+
+        // Bending energy
+        const energy_factor = stiffness / voronoi_length;
+        const energy = 0.5 * energy_factor * (kappa1_diff * kappa1_diff + kappa2_diff * kappa2_diff);
+
+        // --- Gradients and Hessians (complex part, adapted from der.ts) ---
+
+        const dE_dKappa1 = energy_factor * kappa1_diff;
+        const dE_dKappa2 = energy_factor * kappa2_diff;
+
+        const t_tilde = t_prev.add(t_curr).scale(1.0 / chi);
+        const d1_tilde = d1_prev.add(d1_curr).scale(0.5);
+        const d2_tilde = d2_prev.add(d2_curr).scale(0.5);
+
+        const dKappa1_de_prev = t_tilde.scale(-kappa1).add(Vector3.Cross(t_curr, d2_tilde)).scale(1.0 / l_prev);
+        const dKappa1_de_curr = t_tilde.scale(-kappa1).subtract(Vector3.Cross(t_prev, d2_tilde)).scale(1.0 / l_curr);
+
+        const dKappa2_de_prev = t_tilde.scale(-kappa2).subtract(Vector3.Cross(t_curr, d1_tilde)).scale(1.0 / l_prev);
+        const dKappa2_de_curr = t_tilde.scale(-kappa2).add(Vector3.Cross(t_prev, d1_tilde)).scale(1.0 / l_curr);
+
+        const dE_de_prev = dKappa1_de_prev.scale(dE_dKappa1).add(dKappa2_de_prev.scale(dE_dKappa2));
+        const dE_de_curr = dKappa1_de_curr.scale(dE_dKappa1).add(dKappa2_de_curr.scale(dE_dKappa2));
+
+        const grad_x_prev = dE_de_prev.scale(-1.0);
+        const grad_x_curr = dE_de_prev.subtract(dE_de_curr);
+        const grad_x_next = dE_de_curr;
+
+        const gradient = [
+            grad_x_prev.x, grad_x_prev.y, grad_x_prev.z,
+            grad_x_curr.x, grad_x_curr.y, grad_x_curr.z,
+            grad_x_next.x, grad_x_next.y, grad_x_next.z
+        ];
+
+        // Simplified Hessian (first-order approximation)
+        const H00 = createOuterProductMatrix(grad_x_prev, grad_x_prev).scale(1.0 / stiffness); // Approximation
+        const H11 = createOuterProductMatrix(grad_x_curr, grad_x_curr).scale(1.0 / stiffness);
+        const H22 = createOuterProductMatrix(grad_x_next, grad_x_next).scale(1.0 / stiffness);
+        const H01 = createOuterProductMatrix(grad_x_prev, grad_x_curr).scale(1.0 / stiffness);
+        const H02 = createOuterProductMatrix(grad_x_prev, grad_x_next).scale(1.0 / stiffness);
+        const H12 = createOuterProductMatrix(grad_x_curr, grad_x_next).scale(1.0 / stiffness);
+
+        const hessianBlocks = [
+            [H00, H01, H02],
+            [H01, H11, H12], // Symmetric
+            [H02, H12, H22]  // Symmetric
+        ];
+
+        return { energy, gradient, hessianBlocks };
     }
 
     // Computes stretching energy, gradient, and Hessian blocks.
@@ -249,8 +529,13 @@ export class DERSolver {
             }
         }
 
+        // Update geometric frames
+        this.updateTangents();
+        this.updateReferenceFrames();
+        this.updateMaterialFrames();
+
         // Step 2: Process stretching forces
-        for (let i = 0; i < this.getNumElements(); i++) {
+        for (let i = 0; i < this.getNumEdges(); i++) {
             const v0_idx = i;
             const v1_idx = i + 1;
 
@@ -279,7 +564,36 @@ export class DERSolver {
             this.bsm.addBlockAt(p1_block_idx, p1_block_idx, result.hessianBlocks.H_p1p1);
         }
 
-        // Step 3: Add mass matrix and gravity
+        // Step 3: Process bending forces
+        for (let i = 1; i < this.getNumVertices() - 1; i++) {
+            const result = this.computeBendingForces(i, this.bendStiffness);
+
+            const p_prev_block_idx = 2 * (i - 1);
+            const p_curr_block_idx = 2 * i;
+            const p_next_block_idx = 2 * (i + 1);
+
+            const p_prev_dof_start = this.boundaries[p_prev_block_idx];
+            const p_curr_dof_start = this.boundaries[p_curr_block_idx];
+            const p_next_dof_start = this.boundaries[p_next_block_idx];
+
+            // Assemble gradient
+            const dof_indices = [p_prev_dof_start, p_curr_dof_start, p_next_dof_start];
+            for (let j = 0; j < 3; j++) {
+                for (let d = 0; d < 3; d++) {
+                    gradient[dof_indices[j] + d] += result.gradient[j * 3 + d];
+                }
+            }
+
+            // Assemble Hessian
+            const block_indices = [p_prev_block_idx, p_curr_block_idx, p_next_block_idx];
+            for (let j = 0; j < 3; j++) {
+                for (let k = j; k < 3; k++) { // SymmetricBlockSparseMatrix: only add for k >= j
+                    this.bsm.addBlockAt(block_indices[j], block_indices[k], result.hessianBlocks[j][k]);
+                }
+            }
+        }
+
+        // Step 4: Add mass matrix and gravity
         const inv_dt2 = 1.0 / (deltaTime * deltaTime);
         const mass_term = this.vertexMass * inv_dt2;
         const inertia_term = this.vertexMass * this.radius * this.radius * inv_dt2;
@@ -301,7 +615,7 @@ export class DERSolver {
             gradient[posDofStart + 1] += this.vertexMass * -this.gravity.y;
         }
 
-        // Step 4: Handle fixed blocks
+        // Step 5: Handle fixed blocks
         for (const blockIndex of this.fixedBlockIndices) {
             this.bsm.setFixedBlock(blockIndex);
             
@@ -313,10 +627,10 @@ export class DERSolver {
             }
         }
 
-        // Step 5: Solve linear system: (H + M/dt^2) * delta_q = gradient
+        // Step 6: Solve linear system: (H + M/dt^2) * delta_q = gradient
         const delta_q = this.bsm.conjugateGradientSolver(gradient, 100, 1e-6);
 
-        // Step 6: Update velocities and positions
+        // Step 7: Update velocities and positions
         for (let i = 0; i < numDofs; i++) {
             if (!this.fixedDofs.has(i)) {
                 // Update position: q_new = q_pred - delta_q
