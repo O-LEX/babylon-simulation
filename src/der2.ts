@@ -51,6 +51,15 @@ function createOuterProductMatrix(a: Vector3, b: Vector3): Matrix {
     return new Matrix(3, 3, data);
 }
 
+function createSkewSymmetricMatrix(v: Vector3): Matrix {
+    const data = [
+        0, -v.z, v.y,
+        v.z, 0, -v.x,
+        -v.y, v.x, 0
+    ];
+    return new Matrix(3, 3, data);
+}
+
 /**
  * Multiplies a 3x3 Matrix by a Vector3.
  * @param matrix The 3x3 matrix to multiply.
@@ -99,7 +108,7 @@ export class DERSolver {
     private radius: number;
 
     private bsm: SymmetricBlockSparseMatrix;
-    private gravity: Vector3 = new Vector3(0, -9.81, 0);
+    private gravity: Vector3 = new Vector3(0, 0, 0);
 
     // Frame data
     private tangents: Vector3[] = [];
@@ -343,94 +352,84 @@ export class DERSolver {
      * @param stiffness The bending stiffness coefficient.
      */
     private computeBendingForces(
-        vertexIndex: number, // This is the index `i` of the central vertex x_i
+        vertexIndex: number,
         stiffness: number
     ): {
         energy: number;
-        gradient: number[]; // A 9-element array for forces on x_{i-1}, x_i, x_{i+1}
-        hessianBlocks: Matrix[][]; // 3x3 grid of 3x3 matrices
+        gradient: number[];
+        hessian: Matrix[][];
     } {
-        // Get positions of the three vertices forming the bend
+        // --- 1. Initial Setup and Geometric Quantities ---
         const x_prev = this.getPosition(vertexIndex - 1);
         const x_curr = this.getPosition(vertexIndex);
         const x_next = this.getPosition(vertexIndex + 1);
 
-        // Edge vectors
-        const e_prev = x_curr.subtract(x_prev); // e_{i-1}
-        const e_curr = x_next.subtract(x_curr); // e_i
+        const e_prev = x_curr.subtract(x_prev);
+        const e_curr = x_next.subtract(x_curr);
 
         const l_prev = e_prev.length();
         const l_curr = e_curr.length();
 
         const zeros = {
             energy: 0,
-            gradient: [0, 0, 0, 0, 0, 0, 0, 0, 0],
-            hessianBlocks: Array(3).fill(null).map(() => Array(3).fill(new Matrix(3, 3)))
+            gradient: Array(9).fill(0),
+            hessian: Array(3).fill(null).map(() => Array(3).fill(new Matrix(3, 3)))
         };
 
-        if (l_prev < 1e-8 || l_curr < 1e-8) {
-            return zeros;
-        }
+        if (l_prev < 1e-9 || l_curr < 1e-9) return zeros;
 
-        // Tangents (already computed)
-        const t_prev = this.tangents[vertexIndex - 1];
-        const t_curr = this.tangents[vertexIndex];
+        const t_prev = e_prev.scale(1.0 / l_prev);
+        const t_curr = e_curr.scale(1.0 / l_curr);
 
-        // Curvature binormal
         const chi = 1.0 + Vector3.Dot(t_prev, t_curr);
-        if (Math.abs(chi) < 1e-8) {
-            return zeros;
-        }
-        const kappa_b = Vector3.Cross(t_prev, t_curr).scale(2.0 / chi);
+        if (Math.abs(chi) < 1e-9) return zeros;
 
-        // Material frames (already computed)
-        const d1_prev = this.mat_d1[vertexIndex - 1];
-        const d2_prev = this.mat_d2[vertexIndex - 1];
-        const d1_curr = this.mat_d1[vertexIndex];
-        const d2_curr = this.mat_d2[vertexIndex];
+        const kappa_b = Vector3.Cross(t_prev, t_curr).scale(2.0 / chi); // [cite: 487]
 
-        // Material curvature components
-        const kappa1 = 0.5 * Vector3.Dot(d2_prev.add(d2_curr), kappa_b);
-        const kappa2 = -0.5 * Vector3.Dot(d1_prev.add(d1_curr), kappa_b);
+        // Material frames and curvature calculation
+        const mat_d1_prev = this.mat_d1[vertexIndex - 1];
+        const mat_d2_prev = this.mat_d2[vertexIndex - 1];
+        const mat_d1_curr = this.mat_d1[vertexIndex];
+        const mat_d2_curr = this.mat_d2[vertexIndex];
+        
+        const kappa1 = 0.5 * Vector3.Dot(mat_d2_prev.add(mat_d2_curr), kappa_b); // [cite: 489]
+        const kappa2 = -0.5 * Vector3.Dot(mat_d1_prev.add(mat_d1_curr), kappa_b); // [cite: 489]
 
-        // Rest curvature (assumed zero for now)
-        const kappa1_rest = 0.0;
+        const kappa1_rest = 0.0; // Assuming zero rest curvature
         const kappa2_rest = 0.0;
-
+        
         const kappa1_diff = kappa1 - kappa1_rest;
         const kappa2_diff = kappa2 - kappa2_rest;
+        
+        const voronoi_length = 0.5 * (this.restLengths[vertexIndex - 1] + this.restLengths[vertexIndex]);
+        if (voronoi_length < 1e-9) return zeros;
 
-        // Voronoi length
-        const voronoi_length = (l_prev + l_curr) * 0.5;
-        if (voronoi_length < 1e-8) {
-            return zeros;
-        }
-
-        // Bending energy
         const energy_factor = stiffness / voronoi_length;
         const energy = 0.5 * energy_factor * (kappa1_diff * kappa1_diff + kappa2_diff * kappa2_diff);
 
-        // --- Gradients and Hessians (complex part, adapted from der.ts) ---
-
+        // Coefficients needed for energy gradient calculation
         const dE_dKappa1 = energy_factor * kappa1_diff;
         const dE_dKappa2 = energy_factor * kappa2_diff;
 
+        // --- 2. First Derivative of Curvature (Gradient) Calculation ---
+        // Calculate tilde vectors as per the paper's definition [cite: 489]
         const t_tilde = t_prev.add(t_curr).scale(1.0 / chi);
-        const d1_tilde = d1_prev.add(d1_curr).scale(0.5);
-        const d2_tilde = d2_prev.add(d2_curr).scale(0.5);
+        const d1_tilde = mat_d1_prev.add(mat_d1_curr);
+        const d2_tilde = mat_d2_prev.add(mat_d2_curr);
 
-        const dKappa1_de_prev = t_tilde.scale(-kappa1).add(Vector3.Cross(t_curr, d2_tilde)).scale(1.0 / l_prev);
-        const dKappa1_de_curr = t_tilde.scale(-kappa1).subtract(Vector3.Cross(t_prev, d2_tilde)).scale(1.0 / l_curr);
+        // ∂κ₁/∂e and ∂κ₂/∂e [cite: 495]
+        const dK1de_prev = t_tilde.scale(-kappa1).add(Vector3.Cross(t_curr, d2_tilde.scale(0.5))).scale(1.0 / l_prev);
+        const dK1de_curr = t_tilde.scale(-kappa1).subtract(Vector3.Cross(t_prev, d2_tilde.scale(0.5))).scale(1.0 / l_curr);
+        const dK2de_prev = t_tilde.scale(-kappa2).subtract(Vector3.Cross(t_curr, d1_tilde.scale(0.5))).scale(1.0 / l_prev);
+        const dK2de_curr = t_tilde.scale(-kappa2).add(Vector3.Cross(t_prev, d1_tilde.scale(0.5))).scale(1.0 / l_curr);
 
-        const dKappa2_de_prev = t_tilde.scale(-kappa2).subtract(Vector3.Cross(t_curr, d1_tilde)).scale(1.0 / l_prev);
-        const dKappa2_de_curr = t_tilde.scale(-kappa2).add(Vector3.Cross(t_prev, d1_tilde)).scale(1.0 / l_curr);
+        // Use chain rule to compute energy gradient ∂E/∂x
+        const grad_e_prev = dK1de_prev.scale(dE_dKappa1).add(dK2de_prev.scale(dE_dKappa2));
+        const grad_e_curr = dK1de_curr.scale(dE_dKappa1).add(dK2de_curr.scale(dE_dKappa2));
 
-        const dE_de_prev = dKappa1_de_prev.scale(dE_dKappa1).add(dKappa2_de_prev.scale(dE_dKappa2));
-        const dE_de_curr = dKappa1_de_curr.scale(dE_dKappa1).add(dKappa2_de_curr.scale(dE_dKappa2));
-
-        const grad_x_prev = dE_de_prev.scale(-1.0);
-        const grad_x_curr = dE_de_prev.subtract(dE_de_curr);
-        const grad_x_next = dE_de_curr;
+        const grad_x_prev = grad_e_prev.scale(-1);
+        const grad_x_next = grad_e_curr;
+        const grad_x_curr = grad_e_prev.subtract(grad_e_curr);
 
         const gradient = [
             grad_x_prev.x, grad_x_prev.y, grad_x_prev.z,
@@ -438,21 +437,110 @@ export class DERSolver {
             grad_x_next.x, grad_x_next.y, grad_x_next.z
         ];
 
-        // Simplified Hessian (first-order approximation)
-        const H00 = createOuterProductMatrix(grad_x_prev, grad_x_prev).scale(1.0 / stiffness); // Approximation
-        const H11 = createOuterProductMatrix(grad_x_curr, grad_x_curr).scale(1.0 / stiffness);
-        const H22 = createOuterProductMatrix(grad_x_next, grad_x_next).scale(1.0 / stiffness);
-        const H01 = createOuterProductMatrix(grad_x_prev, grad_x_curr).scale(1.0 / stiffness);
-        const H02 = createOuterProductMatrix(grad_x_prev, grad_x_next).scale(1.0 / stiffness);
-        const H12 = createOuterProductMatrix(grad_x_curr, grad_x_next).scale(1.0 / stiffness);
+        // --- 3. Hessian of Curvature Calculation ---
+        const I3 = Matrix.identity(3);
 
-        const hessianBlocks = [
-            [H00, H01, H02],
-            [H01, H11, H12], // Symmetric
-            [H02, H12, H22]  // Symmetric
-        ];
+        // Term 1 of Hessian (Gauss-Newton term)
+        const grad_k1_vectors = [dK1de_prev.scale(-1), dK1de_prev.add(dK1de_curr), dK1de_curr.scale(-1)];
+        const grad_k2_vectors = [dK2de_prev.scale(-1), dK2de_prev.add(dK2de_curr), dK2de_curr.scale(-1)];
+        const H_GN: Matrix[][] = Array(3).fill(null).map(() => Array(3).fill(new Matrix(3,3)));
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                const H_GN_k1 = createOuterProductMatrix(grad_k1_vectors[i], grad_k1_vectors[j]);
+                const H_GN_k2 = createOuterProductMatrix(grad_k2_vectors[i], grad_k2_vectors[j]);
+                H_GN[i][j] = H_GN_k1.add(H_GN_k2).scale(energy_factor);
+            }
+        }
+        
+        // Term 2 of Hessian (second derivative of curvature term)
+        const H_k_deriv: Matrix[][] = Array(3).fill(null).map(() => Array(3).fill(new Matrix(3,3)));
+        
+        // Calculate ∂²κ₁/∂e² and ∂²κ₂/∂e² [cite: 500-503]
+        // 3.1 Calculate H_k1
+        // ∂²κ₁/∂(e^{i-1})²
+        const t_tilde_outer = createOuterProductMatrix(t_tilde, t_tilde);
+        const H1_pp_term1 = t_tilde_outer.scale(2 * kappa1)
+            .subtract(createOuterProductMatrix(Vector3.Cross(t_curr, d2_tilde), t_tilde))
+            .subtract(createOuterProductMatrix(t_tilde, Vector3.Cross(t_curr, d2_tilde)))
+            .scale(1.0 / (l_prev * l_prev));
+        const H1_pp_term2 = I3.subtract(createOuterProductMatrix(t_prev, t_prev)).scale(-kappa1 / (chi * l_prev * l_prev));
+        const H1_pp_term3 = createOuterProductMatrix(kappa_b, this.mat_d2[vertexIndex-1]).add(createOuterProductMatrix(this.mat_d2[vertexIndex-1], kappa_b)).scale(1.0 / (4 * l_prev * l_prev));
+        const H1_pp = H1_pp_term1.add(H1_pp_term2).add(H1_pp_term3);
 
-        return { energy, gradient, hessianBlocks };
+        // ∂²κ₁/∂(e^i)²
+        const H1_nn_term1 = t_tilde_outer.scale(2 * kappa1)
+            .add(createOuterProductMatrix(Vector3.Cross(t_prev, d2_tilde), t_tilde))
+            .add(createOuterProductMatrix(t_tilde, Vector3.Cross(t_prev, d2_tilde)))
+            .scale(1.0 / (l_curr * l_curr));
+        const H1_nn_term2 = I3.subtract(createOuterProductMatrix(t_curr, t_curr)).scale(-kappa1 / (chi * l_curr * l_curr));
+        const H1_nn_term3 = createOuterProductMatrix(kappa_b, this.mat_d2[vertexIndex]).add(createOuterProductMatrix(this.mat_d2[vertexIndex], kappa_b)).scale(1.0 / (4 * l_curr * l_curr));
+        const H1_nn = H1_nn_term1.add(H1_nn_term2).add(H1_nn_term3);
+
+        // ∂²κ₁/∂e^{i-1}∂e^i
+        const H1_pn_term1 = I3.add(createOuterProductMatrix(t_prev, t_curr)).scale(-kappa1 / (chi * l_prev * l_curr));
+        const H1_pn_term2 = t_tilde_outer.scale(2 * kappa1)
+            .subtract(createOuterProductMatrix(Vector3.Cross(t_curr, d2_tilde), t_tilde))
+            .add(createOuterProductMatrix(t_tilde, Vector3.Cross(t_prev, d2_tilde)))
+            .subtract(createSkewSymmetricMatrix(d2_tilde))
+            .scale(1.0 / (l_prev * l_curr));
+        const H1_pn = H1_pn_term1.add(H1_pn_term2);
+        
+        // 3.2 Calculate H_k2 (κ₁ -> κ₂, d₂ -> -d₁)
+        // ∂²κ₂/∂(e^{i-1})²
+        const H2_pp_term1 = t_tilde_outer.scale(2 * kappa2)
+            .subtract(createOuterProductMatrix(Vector3.Cross(t_curr, d1_tilde).scale(-1), t_tilde))
+            .subtract(createOuterProductMatrix(t_tilde, Vector3.Cross(t_curr, d1_tilde).scale(-1)))
+            .scale(1.0 / (l_prev * l_prev));
+        const H2_pp_term2 = I3.subtract(createOuterProductMatrix(t_prev, t_prev)).scale(-kappa2 / (chi * l_prev * l_prev));
+        const H2_pp_term3 = createOuterProductMatrix(kappa_b, this.mat_d1[vertexIndex-1]).add(createOuterProductMatrix(this.mat_d1[vertexIndex-1], kappa_b)).scale(-1.0 / (4 * l_prev * l_prev));
+        const H2_pp = H2_pp_term1.add(H2_pp_term2).add(H2_pp_term3);
+        
+        // ∂²κ₂/∂(e^i)²
+        const H2_nn_term1 = t_tilde_outer.scale(2 * kappa2)
+            .add(createOuterProductMatrix(Vector3.Cross(t_prev, d1_tilde).scale(-1), t_tilde))
+            .add(createOuterProductMatrix(t_tilde, Vector3.Cross(t_prev, d1_tilde).scale(-1)))
+            .scale(1.0 / (l_curr * l_curr));
+        const H2_nn_term2 = I3.subtract(createOuterProductMatrix(t_curr, t_curr)).scale(-kappa2 / (chi * l_curr * l_curr));
+        const H2_nn_term3 = createOuterProductMatrix(kappa_b, this.mat_d1[vertexIndex]).add(createOuterProductMatrix(this.mat_d1[vertexIndex], kappa_b)).scale(-1.0 / (4 * l_curr * l_curr));
+        const H2_nn = H2_nn_term1.add(H2_nn_term2).add(H2_nn_term3);
+
+        // ∂²κ₂/∂e^{i-1}∂e^i
+        const H2_pn_term1 = I3.add(createOuterProductMatrix(t_prev, t_curr)).scale(-kappa2 / (chi * l_prev * l_curr));
+        const H2_pn_term2 = t_tilde_outer.scale(2 * kappa2)
+            .subtract(createOuterProductMatrix(Vector3.Cross(t_curr, d1_tilde).scale(-1), t_tilde))
+            .add(createOuterProductMatrix(t_tilde, Vector3.Cross(t_prev, d1_tilde).scale(-1)))
+            .subtract(createSkewSymmetricMatrix(d1_tilde).scale(-1))
+            .scale(1.0 / (l_prev * l_curr));
+        const H2_pn = H2_pn_term1.add(H2_pn_term2);
+
+        // 3.3 Apply chain rule to calculate ∂²E/∂x²
+        // ∂²E/∂e_a ∂e_b = dE/dκ₁ * ∂²κ₁/∂e_a ∂e_b + dE/dκ₂ * ∂²κ₂/∂e_a ∂e_b
+        const H_deriv_pp = H1_pp.scale(dE_dKappa1).add(H2_pp.scale(dE_dKappa2));
+        const H_deriv_nn = H1_nn.scale(dE_dKappa1).add(H2_nn.scale(dE_dKappa2));
+        const H_deriv_pn = H1_pn.scale(dE_dKappa1).add(H2_pn.scale(dE_dKappa2));
+        const H_deriv_np = H_deriv_pn.transpose();
+
+        // Convert to Hessian for vertex coordinates x
+        H_k_deriv[0][0] = H_deriv_pp;
+        H_k_deriv[0][1] = H_deriv_pp.add(H_deriv_np).scale(-1);
+        H_k_deriv[0][2] = H_deriv_np;
+        H_k_deriv[1][0] = H_k_deriv[0][1].transpose();
+        H_k_deriv[1][1] = H_deriv_pp.add(H_deriv_nn).add(H_deriv_pn).add(H_deriv_np);
+        H_k_deriv[1][2] = H_deriv_nn.add(H_deriv_pn).scale(-1);
+        H_k_deriv[2][0] = H_k_deriv[0][2].transpose();
+        H_k_deriv[2][1] = H_k_deriv[1][2].transpose();
+        H_k_deriv[2][2] = H_deriv_nn;
+
+        // --- 4. Assemble Final Hessian ---
+        const hessian: Matrix[][] = Array(3).fill(null).map(() => Array(3).fill(new Matrix(3,3)));
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                // Sum of Gauss-Newton term and second derivative term
+                hessian[i][j] = H_GN[i][j].add(H_k_deriv[i][j]);
+            }
+        }
+
+        return { energy, gradient, hessian };
     }
 
     // Computes stretching energy, gradient, and Hessian blocks.
@@ -464,7 +552,7 @@ export class DERSolver {
     ): { 
         energy: number, 
         gradient: number[], 
-        hessianBlocks: { H_p0p0: Matrix, H_p0p1: Matrix, H_p1p1: Matrix } 
+        hessian: { H_p0p0: Matrix, H_p0p1: Matrix, H_p1p1: Matrix } 
     } {
         const p0 = new Vector3(this.q[p0_idx], this.q[p0_idx + 1], this.q[p0_idx + 2]);
         const p1 = new Vector3(this.q[p1_idx], this.q[p1_idx + 1], this.q[p1_idx + 2]);
@@ -477,7 +565,7 @@ export class DERSolver {
             return {
                 energy: 0,
                 gradient: [0, 0, 0, 0, 0, 0],
-                hessianBlocks: {
+                hessian: {
                     H_p0p0: zeroHessian,
                     H_p0p1: zeroHessian,
                     H_p1p1: zeroHessian
@@ -495,7 +583,7 @@ export class DERSolver {
         const grad_p1 = u.scale(stiffness * strain);
         const gradient = [grad_p0.x, grad_p0.y, grad_p0.z, grad_p1.x, grad_p1.y, grad_p1.z];
 
-        // Hessian blocks are 3x3 matrices
+        // Hessian are 3x3 matrices
         const u_outer_u = [
             u.x * u.x, u.x * u.y, u.x * u.z,
             u.y * u.x, u.y * u.y, u.y * u.z,
@@ -508,7 +596,7 @@ export class DERSolver {
         return {
             energy,
             gradient,
-            hessianBlocks: {
+            hessian: {
                 H_p0p0: H_block,
                 H_p0p1: H_block_neg,
                 H_p1p1: H_block
@@ -559,9 +647,9 @@ export class DERSolver {
             }
 
             // Assemble Hessian from blocks
-            this.bsm.addBlockAt(p0_block_idx, p0_block_idx, result.hessianBlocks.H_p0p0);
-            this.bsm.addBlockAt(p0_block_idx, p1_block_idx, result.hessianBlocks.H_p0p1);
-            this.bsm.addBlockAt(p1_block_idx, p1_block_idx, result.hessianBlocks.H_p1p1);
+            this.bsm.addBlockAt(p0_block_idx, p0_block_idx, result.hessian.H_p0p0);
+            this.bsm.addBlockAt(p0_block_idx, p1_block_idx, result.hessian.H_p0p1);
+            this.bsm.addBlockAt(p1_block_idx, p1_block_idx, result.hessian.H_p1p1);
         }
 
         // Step 3: Process bending forces
@@ -588,7 +676,7 @@ export class DERSolver {
             const block_indices = [p_prev_block_idx, p_curr_block_idx, p_next_block_idx];
             for (let j = 0; j < 3; j++) {
                 for (let k = j; k < 3; k++) { // SymmetricBlockSparseMatrix: only add for k >= j
-                    this.bsm.addBlockAt(block_indices[j], block_indices[k], result.hessianBlocks[j][k]);
+                    this.bsm.addBlockAt(block_indices[j], block_indices[k], result.hessian[j][k]);
                 }
             }
         }
@@ -679,6 +767,51 @@ export function createRod(
     for (let i = 0; i < numVertices; i++) {
         const x = (i / (numVertices - 1)) * length;
         positions.push(new Vector3(x, 5, 0));
+    }
+    
+    const fixedVertices = new Set<number>();
+    fixedVertices.add(0); // Fix one end of the rod
+    
+    const geometry: DERGeometry = {
+        positions,
+        fixedVertices,
+        stretchStiffness,
+        bendStiffness,
+        twistStiffness,
+        vertexMass,
+        radius
+    };
+    
+    return geometry;
+}
+
+/**
+ * Utility function to create an L-shaped rod geometry parallel to the ground.
+ */
+export function createLShapedRod(
+    numVertices: number = 21, 
+    length: number = 5.0,
+    stretchStiffness: number = 1000,
+    bendStiffness: number = 100,
+    twistStiffness: number = 100,
+    vertexMass: number = 1.0,
+    radius: number = 0.1
+): DERGeometry {
+    const positions: Vector3[] = [];
+    const bendIndex = Math.floor(numVertices / 2);
+    const segmentLength = length / 2;
+    const y_level = 5.0; // Height above the ground
+
+    // First segment (along X-axis)
+    for (let i = 0; i <= bendIndex; i++) {
+        const x = (i / bendIndex) * segmentLength;
+        positions.push(new Vector3(x, y_level, 0));
+    }
+
+    // Second segment (along Z-axis)
+    for (let i = 1; i < numVertices - bendIndex; i++) {
+        const z = (i / (numVertices - bendIndex - 1)) * segmentLength;
+        positions.push(new Vector3(segmentLength, y_level, z));
     }
     
     const fixedVertices = new Set<number>();

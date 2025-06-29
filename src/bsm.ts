@@ -104,6 +104,21 @@ export class Matrix {
     }
 
     /**
+     * Subtracts another matrix from this one.
+     * @param other The matrix to subtract.
+     */
+    subtract(other: Matrix): Matrix {
+        if (this.rows !== other.rows || this.cols !== other.cols) {
+            throw new Error("Matrix dimensions must match for subtraction.");
+        }
+        const result = new Matrix(this.rows, this.cols);
+        for (let i = 0; i < this.data.length; i++) {
+            result.data[i] = this.data[i] - other.data[i];
+        }
+        return result;
+    }
+
+    /**
      * Scales the matrix by a scalar value.
      * @param s The scalar value.
      */

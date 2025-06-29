@@ -1,6 +1,6 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
 import { ImplicitSolver, createChain, createCloth } from "./simulation";
-import { DERSolver, createRod } from "./der2";
+import { DERSolver, createRod, createLShapedRod } from "./der2";
 // BSM (Block Sparse Matrix) test
 import "./bsm";
 
@@ -34,7 +34,8 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         sphereSize = 0.05;
     } else {
         // Default to DER rod
-        geometry = createRod(10, 3.0, 100, 1, 1, 0.01, 0.1);
+        // geometry = createRod(10, 3.0, 100, 0.001, 1, 0.01, 0.1);
+        geometry = createLShapedRod(10, 3.0, 100, 0.1, 1, 0.01, 0.1);
         solver = new DERSolver(geometry);
         sphereSize = 0.05;
     }
