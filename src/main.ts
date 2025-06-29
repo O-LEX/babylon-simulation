@@ -1,6 +1,6 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
 import { ImplicitSolver, createChain, createCloth } from "./simulation";
-import { DERSolver, createRod } from "./der";
+import { DERSolver, createRod } from "./der2";
 // BSM (Block Sparse Matrix) test
 import "./bsm";
 

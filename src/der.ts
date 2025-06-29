@@ -866,6 +866,7 @@ export class DERSolver {
         }
         
         // Step 3: Process bending forces
+        /*
         for (let i = 0; i < numVertices - 2; i++) {
             const result = this.computeBendingForces(
                 this.getPosition(i),
@@ -892,6 +893,7 @@ export class DERSolver {
                 }
             }
         }
+        */
         
         // Step 4: Process twisting forces (DISABLED FOR STRETCHING TEST)
         /*

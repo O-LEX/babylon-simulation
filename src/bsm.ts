@@ -15,7 +15,7 @@
 /**
  * A general-purpose matrix class for arbitrary dimensions.
  */
-class Matrix {
+export class Matrix {
     rows: number;
     cols: number;
     data: number[];
@@ -102,12 +102,24 @@ class Matrix {
         }
         return result;
     }
+
+    /**
+     * Scales the matrix by a scalar value.
+     * @param s The scalar value.
+     */
+    scale(s: number): Matrix {
+        const result = new Matrix(this.rows, this.cols);
+        for (let i = 0; i < this.data.length; i++) {
+            result.data[i] = this.data[i] * s;
+        }
+        return result;
+    }
 }
 
 /**
  * A namespace containing helper functions for vector operations on flat arrays.
  */
-namespace VectorUtils {
+export namespace VectorUtils {
     export function dot(a: number[], b: number[]): number {
         let result = 0;
         for (let i = 0; i < a.length; i++) result += a[i] * b[i];
@@ -136,7 +148,7 @@ namespace VectorUtils {
  * A symmetric block sparse matrix class using CSR format.
  * It only stores the upper-triangular blocks (where block j >= block i).
  */
-class SymmetricBlockSparseMatrix {
+export class SymmetricBlockSparseMatrix {
     // --- Structural Definition (Symmetric) ---
     private boundaries: number[] = [];      // Common block boundaries for rows and columns.
     private row2idx: number[] = [];         // CSR: row_ptr, points to the start of a row's data.
@@ -200,6 +212,55 @@ class SymmetricBlockSparseMatrix {
             }
         }
         console.error(`Block position (${i_row}, ${i_col}) not found in sparse matrix structure`);
+    }
+
+    /**
+     * Sets all matrix block values to zero.
+     */
+    setZero(): void {
+        for (let i = 0; i < this.idx2val.length; i++) {
+            const block = this.idx2val[i];
+            if (block) { // Check if block exists
+                for (let j = 0; j < block.data.length; j++) {
+                    block.data[j] = 0;
+                }
+            }
+        }
+    }
+
+    /**
+     * Modifies the matrix to handle a fixed block (e.g., for boundary conditions).
+     * Sets the diagonal block to identity and zeros out all other blocks in the
+     * same row and column.
+     * @param blockIndex The index of the block to fix.
+     */
+    setFixedBlock(blockIndex: number): void {
+        const blockSize = this.boundaries[blockIndex + 1] - this.boundaries[blockIndex];
+
+        // Zero out the row `blockIndex` (upper triangle part)
+        for (let idx = this.row2idx[blockIndex]; idx < this.row2idx[blockIndex + 1]; idx++) {
+            const j_col = this.idx2col[idx];
+            const block = this.idx2val[idx];
+            
+            if (j_col === blockIndex) {
+                // This is the diagonal block, set it to identity
+                this.idx2val[idx] = Matrix.identity(blockSize);
+            } else {
+                // Off-diagonal block in the row, set to zero
+                for (let k = 0; k < block.data.length; k++) block.data[k] = 0;
+            }
+        }
+
+        // Zero out the column `blockIndex` (which corresponds to rows i < blockIndex)
+        for (let i_row = 0; i_row < blockIndex; i_row++) {
+            for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
+                if (this.idx2col[idx] === blockIndex) {
+                    const block = this.idx2val[idx];
+                    for (let k = 0; k < block.data.length; k++) block.data[k] = 0;
+                    break; // Found the block in this row, can move to the next row
+                }
+            }
+        }
     }
 
     /**
