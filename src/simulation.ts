@@ -200,15 +200,15 @@ function springEnergyGradientHessian(
         };
     }
     
-    const strain = currentLength - restLength;  // C in Unity code
+    const strain = currentLength - restLength; 
     const energy = 0.5 * stiffness * strain * strain;
     
-    const u = diff.normalize();  // u01 in Unity code
+    const u = diff.normalize();  
     const gradients = [u.scale(-stiffness * strain), u.scale(stiffness * strain)];
     
-    // Hessian computation (simplified like Unity)
-    const uu = Matrix3x3.outerProduct(u, u);  // l in Unity code
-    const H = uu.scale(stiffness);  // n in Unity code, then o = n
+    // Hessian computation
+    const uu = Matrix3x3.outerProduct(u, u);
+    const H = uu.scale(stiffness); 
     
     const hessian = [
         [H, H.scale(-1)],
@@ -412,6 +412,35 @@ export function createChain(length: number, resolution: number, stiffness: numbe
         vertexMass: vertexMass
     };
     
+    return geometry;
+}
+
+export function createChainwithBend(length: number, resolution: number, stiffness: number = 100, vertexMass: number = 1.0): Geometry {
+    const positions = [];
+    const edges = [];
+
+    // Create horizontal chain along x-axis
+    for (let i = 0; i < resolution; i++) {
+        positions.push(new Vector3((i / resolution) * length, 5, 0));  // Horizontal chain at y=5
+    }
+
+    for (let i = 0; i < resolution - 1; i++) {
+        edges.push(i, i + 1);
+    }
+
+    // Add bending springs (every second edge)
+    for (let i = 0; i < resolution - 2; i += 2) {
+        edges.push(i, i + 2); // Bend connection
+    }
+
+    const geometry = {
+        positions: positions,
+        edges: edges,
+        fixedVertices: new Set([0]),
+        stiffness: stiffness,
+        vertexMass: vertexMass
+    };
+
     return geometry;
 }
 

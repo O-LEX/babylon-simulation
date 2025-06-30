@@ -1,6 +1,6 @@
 import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
-import { ImplicitSolver, createChain, createCloth } from "./simulation";
-import { DERSolver, createRod, createLShapedRod } from "./der2";
+import { ImplicitSolver, createChain, createChainwithBend, createCloth } from "./simulation";
+import { DERSolver, createRod, createLShapedRod } from "./der";
 // BSM (Block Sparse Matrix) test
 import "./bsm";
 import "./simpleder";
@@ -29,14 +29,18 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
         geometry = createChain(5, 10, 1000, 1.0);
         solver = new ImplicitSolver(geometry);
         sphereSize = 0.1;
+    } else if (simulationType === "bend") {
+        geometry = createChainwithBend(5, 10, 1000, 1.0);
+        solver = new ImplicitSolver(geometry);
+        sphereSize = 0.1;
     } else if (simulationType === "cloth") {
         geometry = createCloth(5, 5, 10, 10, 1000, 1.0);
         solver = new ImplicitSolver(geometry);
         sphereSize = 0.05;
     } else {
         // Default to DER rod
-        // geometry = createRod(10, 3.0, 100, 0.001, 1, 0.01, 0.1);
-        geometry = createLShapedRod(10, 3.0, 100, 0.1, 1, 0.01, 0.1);
+        geometry = createRod(10, 3.0, 100, 0.001, 1, 0.01, 0.1);
+        // geometry = createLShapedRod(10, 3.0, 100, 0.1, 1, 0.01, 0.1);
         solver = new DERSolver(geometry);
         sphereSize = 0.05;
     }
@@ -114,11 +118,7 @@ function main() {
     
     const reset = () => {
         console.log("Resetting simulation...");
-        
-        // Dispose current scene
         scene.dispose();
-        
-        // Create new scene with current selection
         scene = createScene(engine, canvas);
     };
     
