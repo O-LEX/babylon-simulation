@@ -1,135 +1,181 @@
-import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, MeshBuilder, Mesh } from "@babylonjs/core";
-import { ImplicitSolver, createChain, createChainwithBend, createCloth } from "./simulation";
-import { DERSolver, createRod, createLShapedRod } from "./der";
-// BSM (Block Sparse Matrix) test
-import "./bsm";
-import "./simpleder";
+import {
+  Engine, Scene, ArcRotateCamera, Vector3,
+  HemisphericLight, MeshBuilder, Mesh
+} from "@babylonjs/core";
 
-function createScene(engine: Engine, canvas: HTMLCanvasElement) : Scene {
-    const scene = new Scene(engine);
+import { createCloth, createChain } from "./geometry";
+import { Params } from "./params";
+import { ImplicitSolver } from "./implicit";
+import { VBDSolver } from "./vbd";
 
-    const camera = new ArcRotateCamera("camera", Math.PI / 4, Math.PI / 3, 15, new Vector3(0, 2, 0), scene);
-    camera.attachControl(canvas, true);
+// Get simulation parameters from the UI
+function getParamsFromUI(): Params {
+  const dt = parseFloat((document.getElementById("param-dt") as HTMLInputElement).value);
+  const gx = parseFloat((document.getElementById("param-gravity-x") as HTMLInputElement).value);
+  const gy = parseFloat((document.getElementById("param-gravity-y") as HTMLInputElement).value);
+  const gz = parseFloat((document.getElementById("param-gravity-z") as HTMLInputElement).value);
 
-    const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
+  return {
+    dt: isNaN(dt) ? 1 / 60 : dt,
+    gravity: new Vector3(gx, gy, gz)
+  };
+}
 
-    const fpsDisplay = document.getElementById("fpsDisplay");
-    
-    // Get simulation type from HTML select
-    const simulationSelect = document.getElementById("simulationType") as HTMLSelectElement;
-    const simulationType = simulationSelect.value;
-    console.log("Selected simulation type:", simulationType);
+// Create geometry from UI selection
+function createGeometryFromUI() {
+  const geometryType = (document.getElementById("geometry") as HTMLSelectElement).value;
+  switch (geometryType) {
+    case "cloth": return createCloth(5, 5, 10, 10, 1000, 1.0);
+    case "chain": return createChain(5, 10, 1000, 1.0);
+    default: return createCloth(5, 5, 10, 10, 1000, 1.0);
+  }
+}
 
-    let solver: any;
-    let geometry: any;
-    let sphereSize = 0.1;
+// Create solver from UI selection
+function createSolverFromUI(geometry: any, params: Params) {
+  const solverType = (document.getElementById("solver") as HTMLSelectElement).value;
+  switch (solverType) {
+    case "implicit": return new ImplicitSolver(geometry, params);
+    case "vbd": return new VBDSolver(geometry, params);
+    default: return new ImplicitSolver(geometry, params);
+  }
+}
 
-    // Create simulation based on selected type
-    if (simulationType === "chain") {
-        geometry = createChain(5, 10, 1000, 1.0);
-        solver = new ImplicitSolver(geometry);
-        sphereSize = 0.1;
-    } else if (simulationType === "bend") {
-        geometry = createChainwithBend(5, 10, 1000, 1.0);
-        solver = new ImplicitSolver(geometry);
-        sphereSize = 0.1;
-    } else if (simulationType === "cloth") {
-        geometry = createCloth(5, 5, 10, 10, 1000, 1.0);
-        solver = new ImplicitSolver(geometry);
-        sphereSize = 0.05;
-    } else {
-        // Default to DER rod
-        geometry = createRod(10, 3.0, 100, 0.001, 1, 0.01, 0.1);
-        // geometry = createLShapedRod(10, 3.0, 100, 0.1, 1, 0.01, 0.1);
-        solver = new DERSolver(geometry);
-        sphereSize = 0.05;
+// Convert Float32Array to Vector3
+function getVector3FromArray(arr: Float32Array, index: number): Vector3 {
+  return new Vector3(arr[index * 3], arr[index * 3 + 1], arr[index * 3 + 2]);
+}
+
+// Create and return a Babylon.js scene
+function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
+  const scene = new Scene(engine);
+
+  const camera = new ArcRotateCamera("camera", Math.PI / 4, Math.PI / 3, 15, new Vector3(0, 2, 0), scene);
+  camera.attachControl(canvas, true);
+  new HemisphericLight("light", new Vector3(0, 1, 0), scene);
+
+  const fpsDisplay = document.getElementById("fpsDisplay");
+
+  const params = getParamsFromUI();
+  const geometry = createGeometryFromUI();
+  const solver = createSolverFromUI(geometry, params);
+
+  const sphereSize = 0.1;
+  const spheres: Mesh[] = [];
+  let currentPositions = solver.pos;
+  const numVertices = currentPositions.length / 3;
+
+  // Create node spheres
+  for (let i = 0; i < numVertices; i++) {
+    const x = currentPositions[i * 3];
+    const y = currentPositions[i * 3 + 1];
+    const z = currentPositions[i * 3 + 2];
+
+    const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
+    sphere.position.set(x, y, z);
+    spheres.push(sphere);
+  }
+
+  // Create edge lines
+  const lines: Mesh[] = [];
+  const currentEdges = solver.edges;
+  const numEdges = currentEdges.length / 2;
+
+  for (let i = 0; i < numEdges; i++) {
+    const v0 = currentEdges[i * 2];
+    const v1 = currentEdges[i * 2 + 1];
+    const p0 = getVector3FromArray(currentPositions, v0);
+    const p1 = getVector3FromArray(currentPositions, v1);
+
+    const line = MeshBuilder.CreateLines(`line${i}`, {
+      points: [p0, p1],
+      updatable: true
+    }, scene);
+
+    lines.push(line);
+  }
+
+  // Time stepping loop (GafferOnGames style)
+  let lastTime = performance.now();
+  const fixedTimeStep = params.dt;
+  let accumulator = 0;
+
+  scene.registerBeforeRender(() => {
+    const currentTime = performance.now();
+    const frameTime = Math.min((currentTime - lastTime) / 1000, 0.25);
+    lastTime = currentTime;
+    accumulator += frameTime;
+
+    while (accumulator >= fixedTimeStep) {
+      solver.step();
+      accumulator -= fixedTimeStep;
     }
 
-    // Create spheres to visualize nodes
-    const spheres: Mesh[] = [];
-    let currentPositions = solver.getPositions();
-    for (let i = 0; i < currentPositions.length; i++) {
-        const sphere = MeshBuilder.CreateSphere(`sphere${i}`, { diameter: sphereSize }, scene);
-        sphere.position = currentPositions[i];
-        spheres.push(sphere);
+    // Update spheres
+    currentPositions = solver.pos;
+    for (let i = 0; i < spheres.length; i++) {
+      spheres[i].position.set(
+        currentPositions[i * 3],
+        currentPositions[i * 3 + 1],
+        currentPositions[i * 3 + 2]
+      );
     }
 
-    let lines: Mesh[] = [];
-    let currentEdges = solver.getEdges();
-    for (let i = 0; i < currentEdges.length; i++) {
-        const [v0, v1] = currentEdges[i];
-        const line = MeshBuilder.CreateLines(`line${i}`, {
-            points: [currentPositions[v0], currentPositions[v1]],
-            updatable: true
-        }, scene);
-        lines.push(line);
+    // Update lines
+    for (let i = 0; i < numEdges; i++) {
+      const v0 = currentEdges[i * 2];
+      const v1 = currentEdges[i * 2 + 1];
+      const p0 = getVector3FromArray(currentPositions, v0);
+      const p1 = getVector3FromArray(currentPositions, v1);
+
+      const lineData = [
+        p0.x, p0.y, p0.z,
+        p1.x, p1.y, p1.z
+      ];
+      lines[i].updateVerticesData("position", lineData);
     }
 
-    // https://gafferongames.com/post/fix_your_timestep/
-    let lastTime = performance.now();
-    const fixedTimeStep = 1/60;
-    let accumulator = 0;
+    if (fpsDisplay) {
+      const fps = engine.getFps().toFixed(1);
+      fpsDisplay.textContent = `FPS: ${fps}`;
+    }
+  });
 
-    scene.registerBeforeRender(() => {
-        const currentTime = performance.now();
-        const frameTime = Math.min((currentTime - lastTime) / 1000, 0.25); // Cap at 250ms
-        lastTime = currentTime;
-        accumulator += frameTime;
-        while (accumulator >= fixedTimeStep) {
-            solver.step(fixedTimeStep);
-            accumulator -= fixedTimeStep;
-        }
-        
-        currentPositions = solver.getPositions();
-        for (let i = 0; i < spheres.length; i++) {
-            spheres[i].position.copyFrom(currentPositions[i]);
-        }
-        
-        for (let i = 0; i < currentEdges.length; i++) {
-            const [v0, v1] = currentEdges[i];
-            const lineData = [
-                currentPositions[v0].x, currentPositions[v0].y, currentPositions[v0].z,
-                currentPositions[v1].x, currentPositions[v1].y, currentPositions[v1].z
-            ];
-            lines[i].updateVerticesData("position", lineData);
-        }
+  return scene;
+}
 
-        if (fpsDisplay) {
-            const fps = engine.getFps().toFixed(1);
-            fpsDisplay.textContent = `FPS: ${fps}`;
-        }
-    });
-
-    return scene;
-};
-
+// Main entry point
 function main() {
-    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-    const engine = new Engine(canvas, true);
-    let scene = createScene(engine, canvas);
-    
-    engine.runRenderLoop(() => {
-        scene.render();
-    });
+  const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+  const engine = new Engine(canvas, true);
+  let scene = createScene(engine, canvas);
 
-    // Reset functionality
-    const resetSimulation = document.getElementById("resetSimulation") as HTMLButtonElement;
-    const simulationSelect = document.getElementById("simulationType") as HTMLSelectElement;
-    
-    const reset = () => {
-        console.log("Resetting simulation...");
-        scene.dispose();
-        scene = createScene(engine, canvas);
-    };
-    
-    resetSimulation.addEventListener("click", reset);
-    
-    // Auto-reset when simulation type changes
-    simulationSelect.addEventListener("change", reset);
+  engine.runRenderLoop(() => {
+    scene.render();
+  });
 
-    window.addEventListener("resize", () => {
-        engine.resize();
-    });
+  // Reset when buttons or selectors change
+  const resetSimulation = document.getElementById("resetSimulation") as HTMLButtonElement;
+  const geometrySelect = document.getElementById("geometry") as HTMLSelectElement;
+  const solverSelect = document.getElementById("solver") as HTMLSelectElement;
+
+  const reset = () => {
+    scene.dispose();
+    scene = createScene(engine, canvas);
+  };
+
+  resetSimulation.addEventListener("click", reset);
+  geometrySelect.addEventListener("change", reset);
+  solverSelect.addEventListener("change", reset);
+
+  ["param-dt", "param-gravity-x", "param-gravity-y", "param-gravity-z"].forEach(id => {
+    const input = document.getElementById(id) as HTMLInputElement;
+    input.addEventListener("change", reset);
+  });
+
+  window.addEventListener("resize", () => {
+    engine.resize();
+  });
 }
 
 main();
