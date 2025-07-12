@@ -86,14 +86,15 @@ export class XPBDSolver {
                 const restLength = this.restLengths[e];
                 const compliance = this.compliances[e];
 
+                const u01 = diff.normalize();
                 const C = length - restLength;
                 const alpha = compliance * invDt2;
                 const s = -C / (w0 + w1 + alpha);
                 const s0 = s * w0;
                 const s1 = s * w1;
 
-                this.setVector3(this.pos, id0, p0.subtract(diff.scale(s0)));
-                this.setVector3(this.pos, id1, p1.add(diff.scale(s1)));
+                this.setVector3(this.pos, id0, p0.subtract(u01.scale(s0)));
+                this.setVector3(this.pos, id1, p1.add(u01.scale(s1)));
             }
         }
 
