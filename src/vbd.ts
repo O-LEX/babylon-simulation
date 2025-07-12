@@ -78,16 +78,19 @@ export class VBDSolver {
     }
 
     step() {
-        this.forward();
-        this.solve();
-        this.updateVel();
+        for (let step = 0; step < this.params.numSubsteps; step++) {
+            this.forward();
+            for (let itr = 0; itr < this.params.numIterations; itr++) {
+                this.solve();
+            }
+            this.updateVel();
+        }
     }
 
     forward() {
         this.prevPos.set(this.pos);
 
-        const dt = this.params.dt;
-        const g = this.params.g;
+        const dt = this.params.dt / this.params.numSubsteps;
 
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue; // Skip fixed vertices
@@ -103,7 +106,7 @@ export class VBDSolver {
 
     solve() {
         const g = this.params.g;
-        const dt = this.params.dt;
+        const dt = this.params.dt / this.params.numSubsteps;
         const invDt2 = 1 / (dt * dt);
 
         for (let i = 0; i < this.numVertices; i++) {
@@ -152,7 +155,7 @@ export class VBDSolver {
     }
 
     updateVel() {
-        const dt = this.params.dt;
+        const dt = this.params.dt / this.params.numSubsteps;
         const invDt = 1 / dt;
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;

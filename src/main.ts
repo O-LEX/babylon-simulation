@@ -14,12 +14,14 @@ function getParamsFromUI(): Params {
   const gy = parseFloat((document.getElementById("gy") as HTMLInputElement).value);
   const gz = parseFloat((document.getElementById("gz") as HTMLInputElement).value);
   const dt = parseFloat((document.getElementById("dt") as HTMLInputElement).value);
+  const numSubsteps = parseInt((document.getElementById("numSubsteps") as HTMLInputElement).value);
   const numIterations = parseInt((document.getElementById("numIterations") as HTMLInputElement).value);
 
 
   return {
     g: new Vector3(gx, gy, gz),
     dt,
+    numSubsteps,
     numIterations
   };
 }
@@ -159,7 +161,7 @@ function main() {
   geometrySelect.addEventListener("change", reset);
   solverSelect.addEventListener("change", reset);
 
-  ["dt", "gx", "gy", "gz", "numIterations"].forEach(id => {
+  ["gx", "gy", "gz", "dt", "numSubsteps", "numIterations"].forEach(id => {
     const input = document.getElementById(id) as HTMLInputElement;
     input.addEventListener("change", reset);
   });

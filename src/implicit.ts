@@ -238,10 +238,16 @@ export class ImplicitSolver {
     }
 
     step(): void {
+        for (let step = 0; step < this.params.numSubsteps; step++) {
+            this.solve();
+        }
+    }
+
+    solve(): void {
         this.prevPos.set(this.pos);
 
         const g = this.params.g;
-        const dt = this.params.dt;
+        const dt = this.params.dt / this.params.numSubsteps;
         const invDt = 1 / dt;
         const invDt2 = 1 / (dt * dt);
 
