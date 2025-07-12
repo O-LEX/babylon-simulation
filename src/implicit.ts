@@ -126,48 +126,43 @@ class BlockSparseMatrix {
     }
 }
 
-// Spring energy, gradient, and hessian computation
-function springEnergyGradientHessian(
-    pos0: Vector3, 
-    pos1: Vector3, 
-    restLength: number, 
-    stiffness: number
-): { energy: number, gradients: Vector3[], hessian: Matrix3x3[][] } {
+function springEnergy(pos0: Vector3, pos1: Vector3, restLength: number, stiffness: number): number {
     const diff = pos1.subtract(pos0);
-    const currentLength = diff.length();
-    
-    if (currentLength < 1e-8) {
-        // Degenerate case
-        return {
-            energy: 0,
-            gradients: [new Vector3(0, 0, 0), new Vector3(0, 0, 0)],
-            hessian: [[Matrix3x3.identity().scale(stiffness), Matrix3x3.identity().scale(-stiffness)], 
-                     [Matrix3x3.identity().scale(-stiffness), Matrix3x3.identity().scale(stiffness)]]
-        };
+    const length = diff.length();
+    const C = length - restLength;
+    return 0.5 * stiffness * C * C;
+}
+
+function springGradient(pos0: Vector3, pos1: Vector3, restLength: number, stiffness: number): Vector3[] {
+    const diff = pos1.subtract(pos0);
+    const length = diff.length();
+    if (length < 1e-8) return [new Vector3(0, 0, 0), new Vector3(0, 0, 0)]; // Avoid division by zero
+    const C = length - restLength;
+    const u01 = diff.normalize();
+    const dC: Vector3[] = [u01.scale(-1), u01];
+    return [dC[0].scale(stiffness * C), dC[1].scale(stiffness * C)];
+}
+
+function springHessian(pos0: Vector3, pos1: Vector3, restLength: number, stiffness: number): Matrix3x3[][] {
+    const diff = pos1.subtract(pos0);
+    const length = diff.length();
+    if (length < 1e-8) {
+        const I = Matrix3x3.identity();
+        return [[I.scale(stiffness), I.scale(-stiffness)], [I.scale(-stiffness), I.scale(stiffness)]];
     }
-    
-    const strain = currentLength - restLength; 
-    const energy = 0.5 * stiffness * strain * strain;
-    
-    const u = diff.normalize();  
-    const gradients = [u.scale(-stiffness * strain), u.scale(stiffness * strain)];
-    
-    // Hessian computation
-    const uu = Matrix3x3.outerProduct(u, u);
-    const H = uu.scale(stiffness); 
-    
-    const hessian = [
-        [H, H.scale(-1)],
-        [H.scale(-1), H]
-    ];
-    
-    return { energy, gradients, hessian };
+    const C = length - restLength;
+    const u01 = diff.normalize();
+    const l = Matrix3x3.outerProduct(u01, u01);
+    const u = l.scale(stiffness);
+    const H = u.add((Matrix3x3.identity().subtract(l)).scale(stiffness * C / length));
+    return [[H, H.scale(-1)], [H.scale(-1), H]];
 }
 
 export class ImplicitSolver {
     numVertices: number;
     pos: Float32Array;
     prevPos: Float32Array;
+    inertiaPos: Float32Array;
     vel: Float32Array;
     masses: Float32Array;
     fixedVertices: Uint8Array;
@@ -185,6 +180,7 @@ export class ImplicitSolver {
         this.numVertices = geometry.pos.length / 3;
         this.pos = new Float32Array(geometry.pos);
         this.prevPos = new Float32Array(this.numVertices * 3);
+        this.inertiaPos = new Float32Array(this.numVertices * 3);
         this.vel = new Float32Array(this.numVertices * 3);
         this.masses = new Float32Array(geometry.masses);
         this.fixedVertices = new Uint8Array(geometry.fixedVertices);
@@ -243,91 +239,106 @@ export class ImplicitSolver {
     }
 
     step(): void {
-        const g = this.params.gravity;
+        this.prevPos.set(this.pos);
+
+        const g = this.params.g;
         const dt = this.params.dt;
+        const invDt = 1 / dt;
         const invDt2 = 1 / (dt * dt);
 
-        const gradient = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
-
-        this.bsm.setZero();
-
-        this.prevPos.set(this.pos);
-        
-        // Step 1: Update positions using current velocities
+        // Compute inertia positions and warm start
         for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) continue;
-            const p = this.getVector3(this.pos, i);
+            let p = this.getVector3(this.pos, i);
             const v = this.getVector3(this.vel, i);
-            this.setVector3(this.pos, i, p.add(v.scale(dt)));
+            p.addInPlace(v.scale(dt));
+            this.setVector3(this.inertiaPos, i, p);
+            this.setVector3(this.pos, i, p);
         }
-        
-        let totalEnergy = 0;
-        
-        // Step 2: Process each edge (spring) to compute forces and hessian
-        for (let e = 0; e < this.numEdges; e++) {
-            const id0 = this.edges[e * 2];
-            const id1 = this.edges[e * 2 + 1];
-            const p0 = this.getVector3(this.pos, id0);
-            const p1 = this.getVector3(this.pos, id1);
-            const restLength = this.restLengths[e];
-            const stiffness = this.stiffnesses[e];
 
-            const result = springEnergyGradientHessian(
-                p0,
-                p1,
-                restLength,
-                stiffness
-            );
+        for (let itr = 0; itr < this.params.numIterations; itr++) {
+            const gradient = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
+            this.bsm.setZero();
             
-            totalEnergy += result.energy;
+            let totalEnergy = 0;
             
-            // Add gradients (forces)
-            gradient[id0].addInPlace(result.gradients[0]);
-            gradient[id1].addInPlace(result.gradients[1]);
+            // Process each edge (spring) to compute forces and hessian
+            for (let e = 0; e < this.numEdges; e++) {
+                const id0 = this.edges[e * 2];
+                const id1 = this.edges[e * 2 + 1];
+                const p0 = this.getVector3(this.pos, id0);
+                const p1 = this.getVector3(this.pos, id1);
+                const restLength = this.restLengths[e];
+                const stiffness = this.stiffnesses[e];
 
-            // Add hessian blocks to matrix
-            this.bsm.addBlockAt(id0, id0, result.hessian[0][0]);
-            this.bsm.addBlockAt(id0, id1, result.hessian[0][1]);
-            this.bsm.addBlockAt(id1, id0, result.hessian[1][0]);
-            this.bsm.addBlockAt(id1, id1, result.hessian[1][1]);
-        }
+                // Compute spring energy, gradient and hessian
+                const energy = springEnergy(p0, p1, restLength, stiffness);
+                const gradients = springGradient(p0, p1, restLength, stiffness);
+                const hessian = springHessian(p0, p1, restLength, stiffness);
 
-         // Step 3: Add mass matrix (mass_point / (timeStep * timeStep))
-        for (let i = 0; i < this.numVertices; i++) {
-            const mass = this.masses[i];
-            const massMatrix = Matrix3x3.identity().scale(mass / (dt * dt));
-            this.bsm.addBlockAt(i, i, massMatrix);
-        }
+                totalEnergy += energy;
 
-        // Step 4: Add gravity forces
-        for (let i = 0; i < this.numVertices; i++) {
-            const mass = this.masses[i];
-            const p = this.getVector3(this.pos, i);
-            gradient[i].subtractInPlace(g.scale(mass));
-            totalEnergy -= mass * Vector3.Dot(g, p);
-        }
-        
-        // Step 5: Handle fixed vertices
-        for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) {
-                gradient[i] = new Vector3(0, 0, 0);
-                this.setVector3(this.vel, i, new Vector3(0, 0, 0));
-                this.bsm.setFixed(i);
+                // Add gradients (forces)
+                gradient[id0].addInPlace(gradients[0]);
+                gradient[id1].addInPlace(gradients[1]);
+
+                // Add hessian blocks to matrix
+                this.bsm.addBlockAt(id0, id0, hessian[0][0]);
+                this.bsm.addBlockAt(id0, id1, hessian[0][1]);
+                this.bsm.addBlockAt(id1, id0, hessian[1][0]);
+                this.bsm.addBlockAt(id1, id1, hessian[1][1]);
+            }
+
+            // Add inertia term
+            for (let i = 0; i < this.numVertices; i++) {
+                const mass = this.masses[i];
+                const p = this.getVector3(this.pos, i);
+                const inertiaP = this.getVector3(this.inertiaPos, i);
+                gradient[i].addInPlace(p.subtract(inertiaP).scale(mass * invDt2));
+                totalEnergy += 0.5 * mass * invDt2 * Vector3.DistanceSquared(inertiaP, p);
+            }
+
+            // Add gravity forces
+            for (let i = 0; i < this.numVertices; i++) {
+                const mass = this.masses[i];
+                const p = this.getVector3(this.pos, i);
+                gradient[i].subtractInPlace(g.scale(mass));
+                totalEnergy -= mass * Vector3.Dot(g, p);
+            }
+
+            // Add mass matrix (mass_point / (timeStep * timeStep))
+            for (let i = 0; i < this.numVertices; i++) {
+                const mass = this.masses[i];
+                const massMatrix = Matrix3x3.identity().scale(mass * invDt2);
+                this.bsm.addBlockAt(i, i, massMatrix);
+            }
+            
+            // Handle fixed vertices
+            for (let i = 0; i < this.numVertices; i++) {
+                if (this.fixedVertices[i]) {
+                    gradient[i] = new Vector3(0, 0, 0);
+                    this.setVector3(this.vel, i, new Vector3(0, 0, 0));
+                    this.bsm.setFixed(i);
+                }
+            }
+            
+            // Solve linear system
+            const delta = this.bsm.conjugateGradientSolver(gradient, 100, 1e-6);
+
+            // Update positions
+            for (let i = 0; i < this.numVertices; i++) {
+                if (this.fixedVertices[i]) continue;
+                const p = this.getVector3(this.pos, i);
+                const d = delta[i]; // use alpha if needed
+                this.setVector3(this.pos, i, p.subtract(d));
             }
         }
-        
-        // Step 6: Solve linear system
-        const delta = this.bsm.conjugateGradientSolver(gradient, 100, 1e-6);
-        
-        // Step 7: Update velocities and positions
+            
+        // Update velocities
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;
-            let p = this.getVector3(this.pos, i);
-            p = p.subtract(delta[i]);
-            this.setVector3(this.pos, i, p);
-
+            const p = this.getVector3(this.pos, i);
             const prevP = this.getVector3(this.prevPos, i);
-            const v = p.subtract(prevP).scale(1 / dt);
+            const v = p.subtract(prevP).scale(invDt);
             this.setVector3(this.vel, i, v);
         }
     }

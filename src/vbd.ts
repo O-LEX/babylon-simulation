@@ -87,20 +87,17 @@ export class VBDSolver {
         this.prevPos.set(this.pos);
 
         const dt = this.params.dt;
-        const g = this.params.gravity;
+        const g = this.params.g;
 
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue; // Skip fixed vertices
 
-            let v = this.getVector3(this.vel, i);
             let p = this.getVector3(this.pos, i);
+            let v = this.getVector3(this.vel, i);
 
             p.addInPlace(v.scale(dt));
             this.setVector3(this.pos, i, p);
             this.setVector3(this.inertiaPos, i, p);
-
-            v.addInPlace(g.scale(dt));
-            this.setVector3(this.vel, i, v);
         }
     }
 
@@ -119,13 +116,13 @@ export class VBDSolver {
             let h = Matrix3x3.identity().scale(mass * invDt2);
 
             for (let j = this.vertexToEdgeStart[i]; j < this.vertexToEdgeStart[i + 1]; j++) {
-                const edgeIndex = this.vertexToEdgeIndices[j];
-                const id0 = this.edges[edgeIndex * 2];
-                const id1 = this.edges[edgeIndex * 2 + 1];
+                const e = this.vertexToEdgeIndices[j];
+                const id0 = this.edges[e * 2];
+                const id1 = this.edges[e * 2 + 1];
                 
                 const p0 = this.getVector3(this.pos, id0);
                 const p1 = this.getVector3(this.pos, id1);
-                const restLength = this.restLengths[edgeIndex];
+                const restLength = this.restLengths[e];
 
                 const edgeDir = p1.subtract(p0);
                 const length = edgeDir.length();
@@ -134,7 +131,7 @@ export class VBDSolver {
                 const deltaLength = length - restLength;
                 if (Math.abs(deltaLength) < 1e-8) continue; // Skip if no change
 
-                const stiffness = this.stiffnesses[edgeIndex];
+                const stiffness = this.stiffnesses[e];
                 const force = edgeDir.scale(stiffness * deltaLength / length);
 
                 if (id0 === i) f.addInPlace(force);
@@ -149,18 +146,19 @@ export class VBDSolver {
 
             const dx = h.solve(f);
 
-            this.setVector3(this.pos, i, p.add(dx));
+            this.setVector3(this.pos, i, p.subtract(dx));
         }
     }
 
     updateVel() {
         const dt = this.params.dt;
+        const invDt = 1 / dt;
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;
 
             const p = this.getVector3(this.pos, i);
             const prevP = this.getVector3(this.prevPos, i);
-            const v = p.subtract(prevP).scale(1 / dt);
+            const v = p.subtract(prevP).scale(invDt);
             this.setVector3(this.vel, i, v);
         }
     }

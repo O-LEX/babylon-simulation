@@ -10,14 +10,17 @@ import { VBDSolver } from "./vbd";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
-  const dt = parseFloat((document.getElementById("param-dt") as HTMLInputElement).value);
-  const gx = parseFloat((document.getElementById("param-gravity-x") as HTMLInputElement).value);
-  const gy = parseFloat((document.getElementById("param-gravity-y") as HTMLInputElement).value);
-  const gz = parseFloat((document.getElementById("param-gravity-z") as HTMLInputElement).value);
+  const gx = parseFloat((document.getElementById("gx") as HTMLInputElement).value);
+  const gy = parseFloat((document.getElementById("gy") as HTMLInputElement).value);
+  const gz = parseFloat((document.getElementById("gz") as HTMLInputElement).value);
+  const dt = parseFloat((document.getElementById("dt") as HTMLInputElement).value);
+  const numIterations = parseInt((document.getElementById("numIterations") as HTMLInputElement).value);
+
 
   return {
-    dt: isNaN(dt) ? 1 / 60 : dt,
-    gravity: new Vector3(gx, gy, gz)
+    g: new Vector3(gx, gy, gz),
+    dt,
+    numIterations
   };
 }
 
@@ -53,8 +56,6 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
   const camera = new ArcRotateCamera("camera", Math.PI / 4, Math.PI / 3, 15, new Vector3(0, 2, 0), scene);
   camera.attachControl(canvas, true);
   new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-
-  const fpsDisplay = document.getElementById("fpsDisplay");
 
   const params = getParamsFromUI();
   const geometry = createGeometryFromUI();
@@ -95,21 +96,11 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
     lines.push(line);
   }
 
-  // Time stepping loop (GafferOnGames style)
-  let lastTime = performance.now();
-  const fixedTimeStep = params.dt;
-  let accumulator = 0;
+
+  const fpsDisplay = document.getElementById("fpsDisplay");
 
   scene.registerBeforeRender(() => {
-    const currentTime = performance.now();
-    const frameTime = Math.min((currentTime - lastTime) / 1000, 0.25);
-    lastTime = currentTime;
-    accumulator += frameTime;
-
-    while (accumulator >= fixedTimeStep) {
-      solver.step();
-      accumulator -= fixedTimeStep;
-    }
+    solver.step();
 
     // Update spheres
     currentPositions = solver.pos;
@@ -168,7 +159,7 @@ function main() {
   geometrySelect.addEventListener("change", reset);
   solverSelect.addEventListener("change", reset);
 
-  ["param-dt", "param-gravity-x", "param-gravity-y", "param-gravity-z"].forEach(id => {
+  ["dt", "gx", "gy", "gz", "numIterations"].forEach(id => {
     const input = document.getElementById(id) as HTMLInputElement;
     input.addEventListener("change", reset);
   });
