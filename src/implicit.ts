@@ -152,10 +152,9 @@ function springHessian(pos0: Vector3, pos1: Vector3, restLength: number, stiffne
     }
     const C = length - restLength;
     const u01 = diff.normalize();
-    const l = Matrix3x3.outerProduct(u01, u01);
-    const u = l.scale(stiffness);
-    const H = u.add((Matrix3x3.identity().subtract(l)).scale(stiffness * C / length));
-    return [[H, H.scale(-1)], [H.scale(-1), H]];
+    const uu = Matrix3x3.outerProduct(u01, u01);
+    const o = uu.scale(stiffness).add((Matrix3x3.identity().subtract(uu)).scale(stiffness * C / length));
+    return [[o, o.scale(-1)], [o.scale(-1), o]];
 }
 
 export class ImplicitSolver {

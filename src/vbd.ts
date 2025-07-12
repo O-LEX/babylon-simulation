@@ -102,6 +102,7 @@ export class VBDSolver {
     }
 
     solve() {
+        const g = this.params.g;
         const dt = this.params.dt;
         const invDt2 = 1 / (dt * dt);
 
@@ -112,41 +113,41 @@ export class VBDSolver {
             const p = this.getVector3(this.pos, i);
             const inertiaP = this.getVector3(this.inertiaPos, i);
 
-            let f = inertiaP.subtract(p).scale(mass * invDt2);
-            let h = Matrix3x3.identity().scale(mass * invDt2);
+            let gradient = p.subtract(inertiaP).scale(mass * invDt2); // intertia term
+            gradient.subtractInPlace(g.scale(mass)); // gravity force
+            let hessian = Matrix3x3.identity().scale(mass * invDt2); // mass matrix
 
             for (let j = this.vertexToEdgeStart[i]; j < this.vertexToEdgeStart[i + 1]; j++) {
                 const e = this.vertexToEdgeIndices[j];
                 const id0 = this.edges[e * 2];
                 const id1 = this.edges[e * 2 + 1];
+                const stiffness = this.stiffnesses[e];
                 
                 const p0 = this.getVector3(this.pos, id0);
                 const p1 = this.getVector3(this.pos, id1);
                 const restLength = this.restLengths[e];
 
-                const edgeDir = p1.subtract(p0);
-                const length = edgeDir.length();
+                const diff = p1.subtract(p0);
+                const length = diff.length();
                 if (length < 1e-8) continue; // Avoid division by zero
 
-                const deltaLength = length - restLength;
-                if (Math.abs(deltaLength) < 1e-8) continue; // Skip if no change
+                const C = length - restLength;
+                if (Math.abs(C) < 1e-8) continue; // Skip if no change
 
-                const stiffness = this.stiffnesses[e];
-                const force = edgeDir.scale(stiffness * deltaLength / length);
+                const u01 = diff.normalize();
 
-                if (id0 === i) f.addInPlace(force);
-                else f.subtractInPlace(force);
+                if (id0 === i) gradient.subtractInPlace(u01.scale(stiffness * C));
+                else gradient.addInPlace(u01.scale(stiffness * C));
 
-                const I = Matrix3x3.identity();
-                const outer = Matrix3x3.outerProduct(edgeDir, edgeDir);
-                const hessian = I.scale(stiffness * (1- restLength / length)).add(outer.scale(stiffness * restLength / (length * length * length)));
+                const uu = Matrix3x3.outerProduct(u01, u01);
+                const o = uu.scale(stiffness).add((Matrix3x3.identity().subtract(uu)).scale(stiffness * C / length));
 
-                h = h.add(hessian);
+                hessian = hessian.add(o);
             }
 
-            const dx = h.solve(f);
+            const delta = hessian.solve(gradient);
 
-            this.setVector3(this.pos, i, p.subtract(dx));
+            this.setVector3(this.pos, i, p.subtract(delta));
         }
     }
 
