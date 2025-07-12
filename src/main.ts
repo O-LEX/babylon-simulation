@@ -7,6 +7,7 @@ import { createCloth, createChain } from "./geometry";
 import { Params } from "./params";
 import { ImplicitSolver } from "./implicit";
 import { VBDSolver } from "./vbd";
+import { XPBDSolver } from "./xpbd";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
@@ -42,6 +43,7 @@ function createSolverFromUI(geometry: any, params: Params) {
   switch (solverType) {
     case "implicit": return new ImplicitSolver(geometry, params);
     case "vbd": return new VBDSolver(geometry, params);
+    case "xpbd": return new XPBDSolver(geometry, params);
     default: return new ImplicitSolver(geometry, params);
   }
 }

@@ -167,7 +167,7 @@ export class ImplicitSolver {
     fixedVertices: Uint8Array;
 
     numEdges: number;
-    edges: Uint16Array;
+    edges: Uint32Array;
     stiffnesses: Float32Array;
     restLengths: Float32Array;
 
@@ -184,7 +184,7 @@ export class ImplicitSolver {
         this.masses = new Float32Array(geometry.masses);
         this.fixedVertices = new Uint8Array(geometry.fixedVertices);
         this.numEdges = geometry.edges.length / 2;
-        this.edges = new Uint16Array(geometry.edges);
+        this.edges = new Uint32Array(geometry.edges);
         this.stiffnesses = new Float32Array(geometry.stiffnesses);
         this.restLengths = new Float32Array(this.numEdges);
         this.params = params;

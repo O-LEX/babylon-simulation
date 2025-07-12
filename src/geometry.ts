@@ -4,7 +4,7 @@ export interface Geometry {
     pos: Float32Array;            // [x0, y0, z0, x1, y1, z1, ...]
     masses: Float32Array;           // mass per vertex
     fixedVertices: Uint8Array;    // 0 or 1 per vertex
-    edges: Uint16Array;           // [v0, v1, v2, v3, ...]
+    edges: Uint32Array;           // [v0, v1, v2, v3, ...]
     stiffnesses: Float32Array;      // stiffness per edge
 }
 
@@ -67,7 +67,7 @@ export function createCloth(
     }
 
     // Convert edgesList to Uint16Array
-    const edges = new Uint16Array(edgesList);
+    const edges = new Uint32Array(edgesList);
 
     // Create stiffness array: one stiffness per edge
     const stiffnesses = new Float32Array(edges.length / 2);
@@ -110,7 +110,7 @@ export function createChain(length: number, resolution: number, stiffness: numbe
         edgesList.push(i, i + 1);
     }
 
-    const edges = new Uint16Array(edgesList);
+    const edges = new Uint32Array(edgesList);
 
     const stiffnesses = new Float32Array(edges.length / 2);
     stiffnesses.fill(stiffness);
