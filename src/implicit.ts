@@ -253,11 +253,15 @@ export class ImplicitSolver {
 
         // Compute inertia positions and warm start
         for (let i = 0; i < this.numVertices; i++) {
-            let p = this.getVector3(this.pos, i);
-            const v = this.getVector3(this.vel, i);
-            p.addInPlace(v.scale(dt));
-            this.setVector3(this.inertiaPos, i, p);
-            this.setVector3(this.pos, i, p);
+            if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
+            else {
+                let p = this.getVector3(this.pos, i);
+                let v = this.getVector3(this.vel, i);
+                // v.addInPlace(g.scale(dt)); // Apply gravity
+                p.addInPlace(v.scale(dt));
+                this.setVector3(this.inertiaPos, i, p);
+                this.setVector3(this.pos, i, p);
+            }
         }
 
         for (let itr = 0; itr < this.params.numIterations; itr++) {
@@ -331,11 +335,13 @@ export class ImplicitSolver {
 
             // Update positions
             for (let i = 0; i < this.numVertices; i++) {
-                if (this.fixedVertices[i]) continue;
+                // if (this.fixedVertices[i]) continue;
                 const p = this.getVector3(this.pos, i);
                 const d = delta[i]; // use alpha if needed
                 this.setVector3(this.pos, i, p.subtract(d));
             }
+
+            if (itr === this.params.numIterations - 1) console.log("Total energy:", totalEnergy);
         }
             
         // Update velocities

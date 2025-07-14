@@ -93,14 +93,16 @@ export class VBDSolver {
         const dt = this.params.dt / this.params.numSubsteps;
 
         for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) continue; // Skip fixed vertices
-
-            let p = this.getVector3(this.pos, i);
-            let v = this.getVector3(this.vel, i);
-
-            p.addInPlace(v.scale(dt));
-            this.setVector3(this.pos, i, p);
-            this.setVector3(this.inertiaPos, i, p);
+            if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
+            else {
+                const p = this.getVector3(this.pos, i);
+                let v = this.getVector3(this.vel, i);
+                
+                v.addInPlace(this.params.g.scale(dt)); // gravity is included in inertia
+                p.addInPlace(v.scale(dt));
+                this.setVector3(this.pos, i, p);
+                this.setVector3(this.inertiaPos, i, p);
+            }
         }
     }
 
@@ -109,6 +111,8 @@ export class VBDSolver {
         const dt = this.params.dt / this.params.numSubsteps;
         const invDt2 = 1 / (dt * dt);
 
+        let totalEnergy = 0;
+
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;
 
@@ -116,8 +120,10 @@ export class VBDSolver {
             const p = this.getVector3(this.pos, i);
             const inertiaP = this.getVector3(this.inertiaPos, i);
 
+            totalEnergy += 0.5 * mass * Vector3.DistanceSquared(p, inertiaP) * invDt2; // inertia energy
             let gradient = p.subtract(inertiaP).scale(mass * invDt2); // intertia term
-            gradient.subtractInPlace(g.scale(mass)); // gravity force
+
+            // gradient.subtractInPlace(g.scale(mass)); // gravity force if you don't want to include it in inertia
             let hessian = Matrix3x3.identity().scale(mass * invDt2); // mass matrix
 
             for (let j = this.vertexToEdgeStart[i]; j < this.vertexToEdgeStart[i + 1]; j++) {
@@ -137,13 +143,15 @@ export class VBDSolver {
                 const C = length - restLength;
                 if (Math.abs(C) < 1e-8) continue; // Skip if no change
 
+                totalEnergy += 0.5 * stiffness * C * C; // Potential energy
                 const u01 = diff.normalize();
 
                 if (id0 === i) gradient.subtractInPlace(u01.scale(stiffness * C));
                 else gradient.addInPlace(u01.scale(stiffness * C));
 
                 const uu = Matrix3x3.outerProduct(u01, u01);
-                const o = uu.scale(stiffness).add((Matrix3x3.identity().subtract(uu)).scale(stiffness * C / length));
+                const du = Matrix3x3.identity().subtract(uu).scale(1 / length);
+                const o = uu.add(du.scale(C)).scale(stiffness);
 
                 hessian = hessian.add(o);
             }
@@ -152,6 +160,9 @@ export class VBDSolver {
 
             this.setVector3(this.pos, i, p.subtract(delta));
         }
+
+        console.log("Total Energy:", totalEnergy);
+
     }
 
     updateVel() {
