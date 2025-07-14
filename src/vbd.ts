@@ -78,19 +78,20 @@ export class VBDSolver {
     }
 
     step() {
+        const dt = this.params.dt / this.params.numSubsteps;
+        const g = this.params.g;
+        
         for (let step = 0; step < this.params.numSubsteps; step++) {
-            this.forward();
+            this.forward(dt, g);
             for (let itr = 0; itr < this.params.numIterations; itr++) {
-                this.solve();
+                this.solve(dt);
             }
-            this.updateVel();
+            this.updateVel(dt);
         }
     }
 
-    forward() {
+    forward(dt: number, g: Vector3) {
         this.prevPos.set(this.pos);
-
-        const dt = this.params.dt / this.params.numSubsteps;
 
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
@@ -98,7 +99,7 @@ export class VBDSolver {
                 const p = this.getVector3(this.pos, i);
                 let v = this.getVector3(this.vel, i);
                 
-                v.addInPlace(this.params.g.scale(dt)); // gravity is included in inertia
+                v.addInPlace(g.scale(dt)); // gravity is included in inertia
                 p.addInPlace(v.scale(dt));
                 this.setVector3(this.pos, i, p);
                 this.setVector3(this.inertiaPos, i, p);
@@ -106,9 +107,7 @@ export class VBDSolver {
         }
     }
 
-    solve() {
-        const g = this.params.g;
-        const dt = this.params.dt / this.params.numSubsteps;
+    solve(dt: number) {
         const invDt2 = 1 / (dt * dt);
 
         let totalEnergy = 0;
@@ -165,8 +164,7 @@ export class VBDSolver {
 
     }
 
-    updateVel() {
-        const dt = this.params.dt / this.params.numSubsteps;
+    updateVel(dt: number) {
         const invDt = 1 / dt;
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;
