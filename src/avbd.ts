@@ -4,6 +4,9 @@ import { VBDSolver } from "./vbd";
 import { Vector3 } from "@babylonjs/core";
 import { Matrix3x3 } from "./util";
 
+interface AVBDParams {
+}
+
 export class AVBDSolver extends VBDSolver {
     adaptiveStiffness: Float32Array; // numEdges
     lambdas: Float32Array; 
@@ -24,14 +27,15 @@ export class AVBDSolver extends VBDSolver {
 
     warmStart() {
         for (let e = 0; e < this.numEdges; e++) {
-            this.adaptiveStiffness[e] = Math.max(this.adaptiveStiffness[e] * this.gamma, 1.0);
             this.lambdas[e] = this.alpha * this.gamma * this.lambdas[e];
+            this.adaptiveStiffness[e] = Math.max(this.adaptiveStiffness[e] * this.gamma, 1.0);
         }
     }
 
     override solve(dt: number) {
         const invDt2 = 1 / (dt * dt);
 
+        // primal update
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) continue;
 
@@ -39,9 +43,8 @@ export class AVBDSolver extends VBDSolver {
             const p = this.getVector3(this.pos, i);
             const inertiaP = this.getVector3(this.inertiaPos, i);
 
-            let gradient = p.subtract(inertiaP).scale(mass * invDt2); // intertia term
-
-            let hessian = Matrix3x3.identity().scale(mass * invDt2); // mass matrix
+            let f = p.subtract(inertiaP).scale(-mass * invDt2); // intertia term
+            let H = Matrix3x3.identity().scale(mass * invDt2); // mass matrix
 
             for (let j = this.vertexToEdgeStart[i]; j < this.vertexToEdgeStart[i + 1]; j++) {
                 const e = this.vertexToEdgeIndices[j];
@@ -60,24 +63,28 @@ export class AVBDSolver extends VBDSolver {
                 
                 const C = length - restLength;
 
-                const grad = u01.scale(stiffness * C + lambda);
+                const force = u01.scale(stiffness * C + lambda);
 
-                if (id0 === i) gradient.subtractInPlace(grad);
-                else gradient.addInPlace(grad);
+                if (id0 === i) f.addInPlace(force);
+                else f.subtractInPlace(force);
 
                 const uu = Matrix3x3.outerProduct(u01, u01);
                 const du = Matrix3x3.identity().subtract(uu).scale(1 / length);
                 const hess = uu.add(du.scale(C)).scale(stiffness).add(du.scale(lambda));
 
-                hessian = hessian.add(hess);
-
-                // update lambda and stiffness
-                this.lambdas[e] = stiffness * C + lambda;
-                this.adaptiveStiffness[e] = Math.min(this.stiffnesses[e], stiffness + this.beta * Math.abs(C));
+                H = H.add(hess);
             }
 
-            const delta = hessian.solve(gradient);
-            this.setVector3(this.pos, i, p.subtract(delta));
+            const delta = H.solve(f);
+            this.setVector3(this.pos, i, p.add(delta));
+        }
+
+        // dual update
+        for (let e = 0; e < this.numEdges; e++) {
+            // this.lambdas[e] = this.alpha * this.gamma * this.lambdas[e];
+            this.lambdas[e] = 0;
+            // this.adaptiveStiffness[e] = Math.max(this.adaptiveStiffness[e] * this.gamma, 1.0);
+            this.adaptiveStiffness[e] = Math.min(this.stiffnesses[e], this.adaptiveStiffness[e] * this.beta);
         }
     }
 }
