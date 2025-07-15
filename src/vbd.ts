@@ -80,7 +80,7 @@ export class VBDSolver {
     step() {
         const dt = this.params.dt / this.params.numSubsteps;
         const g = this.params.g;
-        
+
         for (let step = 0; step < this.params.numSubsteps; step++) {
             this.forward(dt, g);
             for (let itr = 0; itr < this.params.numIterations; itr++) {
@@ -97,7 +97,7 @@ export class VBDSolver {
             if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
             else {
                 const p = this.getVector3(this.pos, i);
-                let v = this.getVector3(this.vel, i);
+                const v = this.getVector3(this.vel, i);
                 
                 v.addInPlace(g.scale(dt)); // gravity is included in inertia
                 p.addInPlace(v.scale(dt));

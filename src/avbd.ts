@@ -4,19 +4,16 @@ import { VBDSolver } from "./vbd";
 import { Vector3 } from "@babylonjs/core";
 import { Matrix3x3 } from "./util";
 
-interface AVBDParams {
-}
-
 export class AVBDSolver extends VBDSolver {
-    adaptiveStiffness: Float32Array; // numEdges
     lambdas: Float32Array; 
+    adaptiveStiffnesses: Float32Array; // numEdges
     alpha: number = 0.95; // stiffness adaptation factor
     beta: number = 10; // stiffness adaptation factor
     gamma: number = 0.99; // stiffness warm start factor
 
     constructor(geometry: Geometry, params: Params) {
         super(geometry, params);
-        this.adaptiveStiffness = new Float32Array(this.numEdges).fill(1.0);
+        this.adaptiveStiffnesses = new Float32Array(this.numEdges).fill(1.0);
         this.lambdas = new Float32Array(this.numEdges);
     }
 
@@ -28,12 +25,14 @@ export class AVBDSolver extends VBDSolver {
     warmStart() {
         for (let e = 0; e < this.numEdges; e++) {
             this.lambdas[e] = this.alpha * this.gamma * this.lambdas[e];
-            this.adaptiveStiffness[e] = Math.max(this.adaptiveStiffness[e] * this.gamma, 1.0);
+            this.adaptiveStiffnesses[e] = this.gamma * this.adaptiveStiffnesses[e]; // I have no idea about k_start
         }
     }
 
     override solve(dt: number) {
         const invDt2 = 1 / (dt * dt);
+
+        // skip colorization
 
         // primal update
         for (let i = 0; i < this.numVertices; i++) {
@@ -57,10 +56,11 @@ export class AVBDSolver extends VBDSolver {
                 if (length < 1e-8) continue; // Avoid division by zero
                 const u01 = diff.scale(1 / length);
 
-                const stiffness = this.adaptiveStiffness[e];
+                const stiffness = this.adaptiveStiffnesses[e];
                 const restLength = this.restLengths[e];
-                const lambda = this.lambdas[e];
-                
+                let lambda = this.lambdas[e];
+                if (stiffness !== Infinity) lambda = 0;
+
                 const C = length - restLength;
 
                 const force = u01.scale(stiffness * C + lambda);
@@ -81,10 +81,12 @@ export class AVBDSolver extends VBDSolver {
 
         // dual update
         for (let e = 0; e < this.numEdges; e++) {
-            // this.lambdas[e] = this.alpha * this.gamma * this.lambdas[e];
-            this.lambdas[e] = 0;
-            // this.adaptiveStiffness[e] = Math.max(this.adaptiveStiffness[e] * this.gamma, 1.0);
-            this.adaptiveStiffness[e] = Math.min(this.stiffnesses[e], this.adaptiveStiffness[e] * this.beta);
+            if (this.stiffnesses[e] === Infinity) {
+                this.lambdas[e] = this.alpha * this.gamma * this.lambdas[e];
+                this.adaptiveStiffnesses[e] += this.gamma * this.adaptiveStiffnesses[e];
+            } else {
+                this.adaptiveStiffnesses[e] = Math.min(this.stiffnesses[e], this.adaptiveStiffnesses[e] * this.beta);
+            }
         }
     }
 }
