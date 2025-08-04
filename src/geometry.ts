@@ -133,11 +133,13 @@ export function createChain(length: number, resolution: number, stiffness: numbe
 }
 
 export function createHighStiffnessRatioChain(): Geometry {
-    const numVertices = 3;
+    const numVertices = 5;
     const pos = new Float32Array(numVertices * 3);
-    pos[0] = 0; pos[1] = 5; pos[2] = 0; // First vertex
-    pos[3] = 1; pos[4] = 5; pos[5] = 0; // Second vertex
-    pos[6] = 2; pos[7] = 5; pos[8] = 0; // Third vertex
+    for (let i = 0; i < numVertices; i++) {
+        pos[i * 3] = i; // x
+        pos[i * 3 + 1] = 5; // y (fixed height)
+        pos[i * 3 + 2] = 0; // z
+    }
 
     const edgesList: number[] = [];
     for (let i = 0; i < numVertices - 1; i++) {
@@ -146,8 +148,8 @@ export function createHighStiffnessRatioChain(): Geometry {
 
     const edges = new Uint32Array(edgesList);
     const stiffnesses = new Float32Array(edges.length / 2);
-    stiffnesses[0] = 100; // High stiffness for first edge
-    stiffnesses[1] = 1000000;    // Low stiffness for second edge
+    stiffnesses.fill(1000000);
+    stiffnesses[0] = 100;
     const masses = new Float32Array(numVertices);
     masses.fill(1.0);
     const fixedVertices = new Uint8Array(numVertices);
