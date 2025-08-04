@@ -159,9 +159,7 @@ export class VBDSolver {
 
             this.setVector3(this.pos, i, p.subtract(delta));
         }
-
-        console.log("Total Energy:", totalEnergy);
-
+        // console.log("Total Energy:", totalEnergy);
     }
 
     updateVel(dt: number) {
