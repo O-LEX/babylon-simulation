@@ -77,8 +77,6 @@ export class ImplicitSolver {
         }
         
         this.bsm = new BlockSparseMatrix();
-        
-        // Create sparse matrix structure
         const structure = this.createSparseMatrixStructure();
         this.bsm.initialize(structure.row2idx, structure.idx2col);
     }
@@ -92,11 +90,11 @@ export class ImplicitSolver {
         }
         
         // Add edge connections
-        for (let i = 0; i < this.numEdges; i++) {
-            const v0 = this.edges[i * 2];
-            const v1 = this.edges[i * 2 + 1];
-            adjacency.get(v0)!.add(v1);
-            adjacency.get(v1)!.add(v0);
+        for (let e = 0; e < this.numEdges; e++) {
+            const id0 = this.edges[e * 2];
+            const id1 = this.edges[e * 2 + 1];
+            adjacency.get(id0)!.add(id1);
+            adjacency.get(id1)!.add(id0);
         }
         
         // Build CSR structure

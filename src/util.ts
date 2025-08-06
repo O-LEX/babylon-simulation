@@ -203,67 +203,179 @@ export class BlockSparseMatrix {
     }
 }
 
-export class SparseMatrix {
-    private row2idx: number[] = [];      // Row pointer
-    private idx2col: number[] = [];      // Column indices
-    private idx2val: number[] = [];      // Non-zero values
+export interface Triplet {
+    row: number;
+    col: number;
+    val: number;
+}
 
-    // Working arrays for CG solver
+export class SparseMatrix {
+    private row2idx: number[] = [];
+    private idx2col: number[] = [];
+    private idx2val: number[] = [];
+
     private p: number[] = [];
     private Ap: number[] = [];
 
-    initialize(row2col: number[], idx2col: number[]): void {
-        this.row2idx = [...row2col];
-        this.idx2col = [...idx2col];
-        this.idx2val = new Array(idx2col.length).fill(0);
-        const n = row2col.length - 1;
+    private numRows = 0;
+    private numCols = 0;
 
-        this.p = new Array(n).fill(0);
-        this.Ap = new Array(n).fill(0);
+    // Set matrix size only (like Eigen::SparseMatrix::resize)
+    resize(numRows: number, numCols: number): void {
+        this.numRows = numRows;
+        this.numCols = numCols;
+        this.row2idx = [];
+        this.idx2col = [];
+        this.idx2val = [];
+        this.p = new Array(numRows).fill(0);
+        this.Ap = new Array(numRows).fill(0);
     }
 
-    setZero(): void {
-        for (let i = 0; i < this.idx2val.length; i++) {
-            this.idx2val[i] = 0;
-        }
-    }
+    // Set structure and values from triplets (like Eigen::setFromTriplets)
+    setFromTriplets(triplets: Triplet[]): void {
+        const rowBuckets = Array.from({ length: this.numRows }, () => new Map<number, number>());
 
-    addValueAt(i_row: number, i_col: number, value: number): void {
-        for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
-            if (this.idx2col[idx] === i_col) {
-                this.idx2val[idx] += value;
-                return;
+        for (const { row, col, val } of triplets) {
+            if (row >= this.numRows || col >= this.numCols) {
+                throw new Error(`Triplet out of bounds: (${row}, ${col})`);
+            }
+
+            const map = rowBuckets[row];
+            if (map.has(col)) {
+                map.set(col, map.get(col)! + val); // accumulate duplicates
+            } else {
+                map.set(col, val);
             }
         }
-        console.error(`SparseMatrix: Position (${i_row}, ${i_col}) not found.`);
+
+        this.row2idx = [0];
+        this.idx2col = [];
+        this.idx2val = [];
+
+        for (const map of rowBuckets) {
+            const sortedCols = Array.from(map.keys()).sort((a, b) => a - b);
+            for (const col of sortedCols) {
+                this.idx2col.push(col);
+                this.idx2val.push(map.get(col)!);
+            }
+            this.row2idx.push(this.idx2col.length);
+        }
     }
 
-    setFixed(i: number): void {
-        for (let row = 0; row < this.row2idx.length - 1; row++) {
+    multiplyVector(x: Float32Array): Float32Array {
+        const ret = new Float32Array(this.numRows);
+        const n = this.numRows;
+        for (let i = 0; i < n; i++) {
+            let sum = 0;
+            for (let idx = this.row2idx[i]; idx < this.row2idx[i + 1]; idx++) {
+                sum += this.idx2val[idx] * x[this.idx2col[idx]];
+            }
+            ret[i] = sum;
+        }
+        return ret;
+    }
+
+    transpose(): SparseMatrix {
+        const triplets: Triplet[] = [];
+
+        for (let row = 0; row < this.numRows; row++) {
             for (let idx = this.row2idx[row]; idx < this.row2idx[row + 1]; idx++) {
-                if (row === i && this.idx2col[idx] === i) {
-                    this.idx2val[idx] += 1;
-                } else if (row === i || this.idx2col[idx] === i) {
-                    this.idx2val[idx] = 0;
+                const col = this.idx2col[idx];
+                const val = this.idx2val[idx];
+                triplets.push({ row: col, col: row, val }); // Flip row and column
+            }
+        }
+
+        const transposed = new SparseMatrix();
+        transposed.resize(this.numCols, this.numRows); // Swap rows and cols
+        transposed.setFromTriplets(triplets);
+
+        return transposed;
+    }
+
+    scale(scalar: number): SparseMatrix {
+        const result = new SparseMatrix();
+        result.resize(this.numRows, this.numCols);
+        result.row2idx = [...this.row2idx];
+        result.idx2col = [...this.idx2col];
+        result.idx2val = this.idx2val.map(v => v * scalar);
+        return result;
+    }
+
+    add(other: SparseMatrix): SparseMatrix {
+        if (this.numRows !== other.numRows || this.numCols !== other.numCols) {
+            throw new Error("Size mismatch in SparseMatrix.add()");
+        }
+
+        const triplets: Triplet[] = [];
+
+        for (let row = 0; row < this.numRows; row++) {
+            for (let i = this.row2idx[row]; i < this.row2idx[row + 1]; i++) {
+                triplets.push({ row, col: this.idx2col[i], val: this.idx2val[i] });
+            }
+            for (let i = other.row2idx[row]; i < other.row2idx[row + 1]; i++) {
+                triplets.push({ row, col: other.idx2col[i], val: other.idx2val[i] });
+            }
+        }
+
+        const result = new SparseMatrix();
+        result.resize(this.numRows, this.numCols);
+        result.setFromTriplets(triplets);
+        return result;
+    }
+
+    multiply(other: SparseMatrix): SparseMatrix {
+        if (this.numCols !== other.numRows) {
+            throw new Error("Size mismatch in SparseMatrix.multiply()");
+        }
+
+        // Convert 'other' to column-wise map for fast access
+        const otherT = other.transpose(); // optional optimization
+        const triplets: Triplet[] = [];
+
+        for (let row = 0; row < this.numRows; row++) {
+            const rowStart = this.row2idx[row];
+            const rowEnd = this.row2idx[row + 1];
+
+            for (let col = 0; col < other.numCols; col++) {
+                let sum = 0;
+
+                for (let i = rowStart; i < rowEnd; i++) {
+                    const k = this.idx2col[i];
+                    const Aik = this.idx2val[i];
+
+                    const otherStart = other.row2idx[k];
+                    const otherEnd = other.row2idx[k + 1];
+
+                    for (let j = otherStart; j < otherEnd; j++) {
+                        if (other.idx2col[j] === col) {
+                            sum += Aik * other.idx2val[j];
+                        }
+                    }
+                }
+
+                if (Math.abs(sum) > 1e-12) {
+                    triplets.push({ row, col, val: sum });
                 }
             }
         }
+
+        const result = new SparseMatrix();
+        result.resize(this.numRows, other.numCols);
+        result.setFromTriplets(triplets);
+        return result;
     }
 
-    multiply(x: number[], result: number[]): void {
-        for (let i = 0; i < this.row2idx.length - 1; i++) {
-            result[i] = 0;
-            for (let idx = this.row2idx[i]; idx < this.row2idx[i + 1]; idx++) {
-                const j = this.idx2col[idx];
-                result[i] += this.idx2val[idx] * x[j];
-            }
-        }
-    }
-
-    conjugateGradientSolver(r: number[], maxIterations = 100, tolerance = 1e-6): number[] {
-        const n = r.length;
-        const x = new Array(n).fill(0);
-        this.p = [...r];
+    conjugateGradientSolver(
+        b: Float32Array,
+        maxIterations: number = 100,
+        tolerance: number = 1e-6
+    ): Float32Array {
+        const n = this.numRows;
+        const x = new Float32Array(n); // initial guess: zero
+        const r = new Float32Array(b); // residual r = b - A * x = b (initially)
+        const p = new Float32Array(r); // search direction
+        const Ap = new Float32Array(n);
 
         let rsOld = 0;
         for (let i = 0; i < n; i++) {
@@ -271,20 +383,25 @@ export class SparseMatrix {
         }
 
         for (let iter = 0; iter < maxIterations; iter++) {
-            this.multiply(this.p, this.Ap);
+            const ApTemp = this.multiplyVector(p);
+            for (let i = 0; i < n; i++) {
+                Ap[i] = ApTemp[i];
+            }
 
             let pAp = 0;
             for (let i = 0; i < n; i++) {
-                pAp += this.p[i] * this.Ap[i];
+                pAp += p[i] * Ap[i];
             }
 
-            if (Math.abs(pAp) < 1e-12) break;
+            if (Math.abs(pAp) < 1e-12) {
+                break;
+            }
 
             const alpha = rsOld / pAp;
 
             for (let i = 0; i < n; i++) {
-                x[i] += alpha * this.p[i];
-                r[i] -= alpha * this.Ap[i];
+                x[i] += alpha * p[i];
+                r[i] -= alpha * Ap[i];
             }
 
             let rsNew = 0;
@@ -292,11 +409,14 @@ export class SparseMatrix {
                 rsNew += r[i] * r[i];
             }
 
-            if (Math.sqrt(rsNew) < tolerance) break;
+            if (Math.sqrt(rsNew) < tolerance) {
+                break;
+            }
 
             const beta = rsNew / rsOld;
+
             for (let i = 0; i < n; i++) {
-                this.p[i] = r[i] + beta * this.p[i];
+                p[i] = r[i] + beta * p[i];
             }
 
             rsOld = rsNew;
