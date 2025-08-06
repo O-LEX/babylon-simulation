@@ -131,3 +131,35 @@ export function createChain(length: number, resolution: number, stiffness: numbe
 
     return geometry;
 }
+
+export function createHighStiffnessRatioChain(): Geometry {
+    const numVertices = 3;
+    const pos = new Float32Array(numVertices * 3);
+    for (let i = 0; i < numVertices; i++) {
+        pos[i * 3] = i; // x
+        pos[i * 3 + 1] = 5; // y (fixed height)
+        pos[i * 3 + 2] = 0; // z
+    }
+
+    const edgesList: number[] = [];
+    for (let i = 0; i < numVertices - 1; i++) {
+        edgesList.push(i, i + 1);
+    }
+
+    const edges = new Uint32Array(edgesList);
+    const stiffnesses = new Float32Array(edges.length / 2);
+    stiffnesses.fill(1000000);
+    stiffnesses[0] = 100;
+    const masses = new Float32Array(numVertices);
+    masses.fill(1.0);
+    const fixedVertices = new Uint8Array(numVertices);
+    fixedVertices[0] = 1;
+
+    return {
+        pos,
+        masses,
+        fixedVertices,
+        edges,
+        stiffnesses,
+    };
+}
