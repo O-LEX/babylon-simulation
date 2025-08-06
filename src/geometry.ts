@@ -133,7 +133,7 @@ export function createChain(length: number, resolution: number, stiffness: numbe
 }
 
 export function createHighStiffnessRatioChain(): Geometry {
-    const numVertices = 5;
+    const numVertices = 3;
     const pos = new Float32Array(numVertices * 3);
     for (let i = 0; i < numVertices; i++) {
         pos[i * 3] = i; // x

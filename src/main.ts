@@ -9,7 +9,6 @@ import { ImplicitSolver } from "./implicit";
 import { VBDSolver } from "./vbd";
 import { XPBDSolver } from "./xpbd";
 import { AVBDSolver } from "./avbd";
-import { MultiResVBDSolver } from "./multiresvbd";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
@@ -48,7 +47,6 @@ function createSolverFromUI(geometry: any, params: Params) {
     case "vbd": return new VBDSolver(geometry, params);
     case "avbd": return new AVBDSolver(geometry, params);
     case "xpbd": return new XPBDSolver(geometry, params);
-    case "multiresvbd": return new MultiResVBDSolver(geometry, params);
     default: return new ImplicitSolver(geometry, params);
   }
 }
