@@ -132,7 +132,7 @@ export class ImplicitSolver {
             else {
                 let p = this.getVector3(this.pos, i);
                 let v = this.getVector3(this.vel, i);
-                // v.addInPlace(g.scale(dt)); // Apply gravity
+                v.addInPlace(g.scale(dt)); // Apply gravity
                 p.addInPlace(v.scale(dt));
                 this.setVector3(this.inertiaPos, i, p);
                 this.setVector3(this.pos, i, p);
@@ -182,12 +182,12 @@ export class ImplicitSolver {
             }
 
             // Add gravity forces
-            for (let i = 0; i < this.numVertices; i++) {
-                const mass = this.masses[i];
-                const p = this.getVector3(this.pos, i);
-                gradient[i].subtractInPlace(g.scale(mass));
-                totalEnergy -= mass * Vector3.Dot(g, p);
-            }
+            // for (let i = 0; i < this.numVertices; i++) {
+            //     const mass = this.masses[i];
+            //     const p = this.getVector3(this.pos, i);
+            //     gradient[i].subtractInPlace(g.scale(mass));
+            //     totalEnergy -= mass * Vector3.Dot(g, p);
+            // }
 
             // Add mass matrix (mass_point / (timeStep * timeStep))
             for (let i = 0; i < this.numVertices; i++) {

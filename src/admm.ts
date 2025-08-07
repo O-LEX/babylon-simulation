@@ -12,6 +12,8 @@ export class ADMMSolver {
     masses: Float32Array;    // Masses M
     fixedVertices: Uint8Array;
 
+    originalPos: Float32Array; // Original positions for fixed vertices
+
     numEdges: number;
     edges: Uint32Array;      // Spring connectivity info
     stiffnesses: Float32Array; // Spring stiffness k
@@ -23,11 +25,14 @@ export class ADMMSolver {
     D: SparseMatrix;         // Reduction matrix
     Dt: SparseMatrix;       // Transpose of the reduction matrix
     W: SparseMatrix;        // Weight matrix
+    M: SparseMatrix;       // Mass matrix can be written as a diagonal array but I use a sparse matrix
 
-    A: SparseMatrix;       // Global system matrix A = M/dt² + Dt*W*W*D
     Dt_Wt_W: SparseMatrix;   // Precomputed Dt*W*W
+    A: SparseMatrix;       // Global system matrix A = M + dt**2*Dt*W*W*D
 
     params: Params;
+
+    D_rows: number; // Number of rows in the reduction matrix D
 
     constructor(geometry: Geometry, params: Params) {
         this.numVertices = geometry.pos.length / 3;
@@ -43,12 +48,14 @@ export class ADMMSolver {
         this.restLengths = new Float32Array(this.numEdges);
         this.params = params;
 
-        this.z = new Float32Array(this.numEdges * 3);
-        this.u = new Float32Array(this.numEdges * 3);
+        this.originalPos = new Float32Array(this.pos); // Store original positions for fixed vertices
 
         this.D = new SparseMatrix();
         this.Dt = new SparseMatrix();
         this.W = new SparseMatrix();
+        this.M = new SparseMatrix();
+        this.Dt_Wt_W = new SparseMatrix();
+        this.A = new SparseMatrix();
 
         for (let e = 0; e < this.numEdges; e++) {
             const id0 = this.edges[e * 2];
@@ -60,11 +67,12 @@ export class ADMMSolver {
             this.restLengths[e] = Vector3.Distance(p0, p1);
         }
 
+        // Construct the reduction matrix D
+        // edge
         const D_triplets: Triplet[] = [];
         for (let e = 0; e < this.numEdges; e++) {
             const id0 = this.edges[e * 2];
             const id1 = this.edges[e * 2 + 1];
-            const stiffness = this.stiffnesses[e];
             const D_e = [[-1, 0, 0, 1, 0, 0], [0, -1, 0, 0, 1, 0], [0, 0, -1, 0, 0, 1]];
             for (let i = 0; i < 3; i++) {
                 for (let j = 0; j < 3; j++) {
@@ -74,10 +82,27 @@ export class ADMMSolver {
             }
         }
 
-        this.D.resize(this.numEdges * 3, this.numVertices * 3);
+        // fixed vertices
+        let numFixed = 0;
+        for (let i = 0; i < this.numVertices; i++) {
+            if (this.fixedVertices[i]) {
+                for (let j = 0; j < 3; j++) {
+                    D_triplets.push({ row: this.numEdges * 3 + numFixed * 3 + j, col: i * 3 + j, val: 1 });
+                }
+                numFixed++;
+            }
+        }
+
+        this.D_rows = this.numEdges * 3 + numFixed * 3; 
+        this.D.resize(this.D_rows, this.numVertices * 3);
         this.D.setFromTriplets(D_triplets);
         this.Dt = this.D.transpose();
 
+        this.z = new Float32Array(this.D_rows);
+        this.u = new Float32Array(this.D_rows);
+
+        // Construct the weight matrix W
+        // edge
         const W_triplets: Triplet[] = [];
         for (let e = 0; e < this.numEdges; e++) {
             const weight = Math.sqrt(this.stiffnesses[e]);
@@ -86,14 +111,26 @@ export class ADMMSolver {
             }
         }
 
-        this.W.resize(this.numEdges * 3, this.numEdges * 3);
+        // fixed vertices
+        numFixed = 0;
+        for (let i = 0; i < this.numVertices; i++) {
+            if (this.fixedVertices[i]) {
+                for (let j = 0; j < 3; j++) {
+                    W_triplets.push({ row: this.numEdges * 3 + numFixed * 3 + j, col: this.numEdges * 3 + numFixed * 3 + j, val: 10000 });
+                }
+                numFixed++;
+            }
+        }
+
+        this.W.resize(this.D_rows, this.D_rows);
         this.W.setFromTriplets(W_triplets);
 
+        // Precompute Dt * Wt * W
         const dt = this.params.dt / this.params.numSubsteps;
         const dt2 = dt * dt;
         this.Dt_Wt_W = this.Dt.multiply(this.W).multiply(this.W).scale(dt2);
 
-        // mass matrix M = diag(masses)
+        // Construct the mass matrix M
         const M_triplets: Triplet[] = [];
         for (let i = 0; i < this.numVertices; i++) {
             const mass = this.masses[i];
@@ -101,10 +138,10 @@ export class ADMMSolver {
                 M_triplets.push({ row: i * 3 + j, col: i * 3 + j, val: mass });
             }
         }
-        const M = new SparseMatrix();
-        M.resize(this.numVertices * 3, this.numVertices * 3);
-        M.setFromTriplets(M_triplets);
-        this.A = M.add(this.Dt_Wt_W.multiply(this.D));
+        this.M.resize(this.numVertices * 3, this.numVertices * 3);
+        this.M.setFromTriplets(M_triplets);
+
+        this.A = this.M.add(this.Dt_Wt_W.multiply(this.D));
     }
 
     step(): void {
@@ -121,7 +158,6 @@ export class ADMMSolver {
         this.prevPos.set(this.pos);
         this.z = this.D.multiplyVector(this.pos);
         this.u.fill(0);
-        const b = new Float32Array(this.numVertices * 3);
 
         // Compute inertia positions
         for (let i = 0; i < this.numVertices; i++) {
@@ -139,6 +175,7 @@ export class ADMMSolver {
         // ADMM iterations
         for (let itr = 0; itr < this.params.numIterations; itr++) {
             // local step
+            // edge
             for (let e = 0; e < this.numEdges; e++) {
                 const id0 = this.edges[e * 2];
                 const id1 = this.edges[e * 2 + 1];
@@ -164,12 +201,26 @@ export class ADMMSolver {
                 this.setVector3(this.u, e, u_e);
             }
 
-            // global step
-            for (let i = 0; i < this.numVertices * 3; i++) {
-                b[i] = this.masses[Math.floor(i / 3)] * this.inertiaPos[i];
+            // fixed vertices
+            let numFixed = 0;
+            for (let i = 0; i < this.numVertices; i++) {
+                if (this.fixedVertices[i]) {
+                    const p = this.getVector3(this.pos, i);
+                    let z_i = this.getVector3(this.z, this.numEdges + numFixed);
+                    let u_i = this.getVector3(this.u, this.numEdges + numFixed);
+                    const q = this.getVector3(this.originalPos, i);
+                    z_i = q;
+                    u_i = u_i.add(p).subtract(z_i);
+                    this.setVector3(this.z, this.numEdges + numFixed, z_i);
+                    this.setVector3(this.u, this.numEdges + numFixed, u_i);
+                    numFixed++;
+                }
             }
-            
-            const z_minus_u = new Float32Array(this.numEdges * 3);
+
+            // global step
+            const b = this.M.multiplyVector(this.inertiaPos);
+
+            const z_minus_u = new Float32Array(this.D_rows);
             for (let i = 0; i < this.z.length; i++) {
                 z_minus_u[i] = this.z[i] - this.u[i];
             }
@@ -179,20 +230,11 @@ export class ADMMSolver {
             }
 
             const x = this.A.conjugateGradientSolver(b);
-            for(let i=0; i<this.numVertices; ++i){
-                if(this.fixedVertices[i]){
-                    this.setVector3(x, i, this.getVector3(this.inertiaPos, i));
-                }
-            }
             this.pos.set(x);
         }
 
-        for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) continue;
-            const p = this.getVector3(this.pos, i);
-            const prevP = this.getVector3(this.prevPos, i);
-            const v = p.subtract(prevP).scale(invDt);
-            this.setVector3(this.vel, i, v);
+        for (let i = 0; i < this.numVertices * 3; i++) {
+            this.vel[i] = (this.pos[i] - this.prevPos[i]) * invDt;
         }
 
     }
