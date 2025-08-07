@@ -188,13 +188,13 @@ export class ADMMSolver {
                 const Dix = p1.subtract(p0);
                 const q = Dix.add(u_e);
 
-                let p = new Vector3(0, 0, 0);
+                let proj = new Vector3(0, 0, 0);
                 const q_length = q.length();
                 if (q_length > 1e-9) {
-                    p = q.scale(restLength / q_length);
+                    proj = q.scale(restLength / q_length);
                 }
 
-                z_e = p.add(q).scale(0.5);
+                z_e = proj.add(q).scale(0.5);
                 u_e = u_e.add(Dix).subtract(z_e);
 
                 this.setVector3(this.z, e, z_e);
@@ -208,8 +208,8 @@ export class ADMMSolver {
                     const p = this.getVector3(this.pos, i);
                     let z_i = this.getVector3(this.z, this.numEdges + numFixed);
                     let u_i = this.getVector3(this.u, this.numEdges + numFixed);
-                    const q = this.getVector3(this.originalPos, i);
-                    z_i = q;
+                    const proj = this.getVector3(this.originalPos, i);
+                    z_i = proj;
                     u_i = u_i.add(p).subtract(z_i);
                     this.setVector3(this.z, this.numEdges + numFixed, z_i);
                     this.setVector3(this.u, this.numEdges + numFixed, u_i);
