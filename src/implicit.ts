@@ -1,130 +1,7 @@
 import { Vector3 } from "@babylonjs/core";
-import { Matrix3x3 } from "./util";
+import { Matrix3x3, BlockSparseMatrix } from "./util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
-
-// Block sparse matrix using CSR format
-class BlockSparseMatrix {
-    private row2idx: number[] = [];
-    private idx2col: number[] = [];
-    private idx2val: Matrix3x3[] = [];
-    
-    // Working arrays for CG solver
-    private p: Vector3[] = [];
-    private Ap: Vector3[] = [];
-
-    initialize(row2col: number[], idx2col: number[]): void {
-        this.row2idx = [...row2col];
-        this.idx2col = [...idx2col];
-        this.idx2val = new Array(idx2col.length).fill(null).map(() => new Matrix3x3());
-        const n = row2col.length - 1;
-        
-        // Initialize working arrays
-        this.p = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
-        this.Ap = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
-    }
-
-    setZero(): void {
-        for (let idx = 0; idx < this.idx2val.length; idx++) {
-            this.idx2val[idx] = new Matrix3x3(); // Zero matrix
-        }
-    }
-
-    addBlockAt(i_row: number, i_col: number, val: Matrix3x3): void {
-        for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
-            if (this.idx2col[idx] === i_col) {
-                this.idx2val[idx] = this.idx2val[idx].add(val);
-                return;
-            }
-        }
-        console.error(`Block position (${i_row}, ${i_col}) not found in sparse matrix structure`);
-    }
-
-    setFixed(i_block: number): void {
-        for (let j_block = 0; j_block < this.row2idx.length - 1; j_block++) {
-            if (j_block === i_block) {
-                // For the fixed block row
-                for (let idx = this.row2idx[j_block]; idx < this.row2idx[j_block + 1]; idx++) {
-                    if (this.idx2col[idx] === i_block) {
-                        this.idx2val[idx] = this.idx2val[idx].add(Matrix3x3.identity());
-                    } else {
-                        this.idx2val[idx] = new Matrix3x3(); // Zero
-                    }
-                }
-            } else {
-                // For other rows, zero out the column corresponding to fixed block
-                for (let idx = this.row2idx[j_block]; idx < this.row2idx[j_block + 1]; idx++) {
-                    if (this.idx2col[idx] === i_block) {
-                        this.idx2val[idx] = new Matrix3x3(); // Zero
-                    }
-                }
-            }
-        }
-    }
-
-    multiply(x: Vector3[], result: Vector3[]): void {
-        for (let i_row = 0; i_row < this.row2idx.length - 1; i_row++) {
-            result[i_row] = new Vector3(0, 0, 0);
-            for (let idx = this.row2idx[i_row]; idx < this.row2idx[i_row + 1]; idx++) {
-                const j_col = this.idx2col[idx];
-                result[i_row].addInPlace(this.idx2val[idx].multiplyVector(x[j_col]));
-            }
-        }
-    }
-
-    conjugateGradientSolver(r: Vector3[], maxIterations: number = 100, tolerance: number = 1e-6): Vector3[] {
-        const n = r.length;
-        const x = new Array(n).fill(null).map(() => new Vector3(0, 0, 0));
-        
-        // Copy r to p
-        for (let i = 0; i < n; i++) {
-            this.p[i] = r[i].clone();
-        }
-        
-        let rsOld = 0;
-        for (let i = 0; i < n; i++) {
-            rsOld += Vector3.Dot(r[i], r[i]);
-        }
-        
-        for (let iter = 0; iter < maxIterations; iter++) {
-            this.multiply(this.p, this.Ap);
-            
-            let pAp = 0;
-            for (let i = 0; i < n; i++) {
-                pAp += Vector3.Dot(this.p[i], this.Ap[i]);
-            }
-            
-            if (Math.abs(pAp) < 1e-12) {
-                break;
-            }
-            
-            const alpha = rsOld / pAp;
-            
-            for (let i = 0; i < n; i++) {
-                x[i].addInPlace(this.p[i].scale(alpha));
-                r[i].subtractInPlace(this.Ap[i].scale(alpha));
-            }
-            
-            let rsNew = 0;
-            for (let i = 0; i < n; i++) {
-                rsNew += Vector3.Dot(r[i], r[i]);
-            }
-            
-            if (Math.sqrt(rsNew) < tolerance) {
-                break;
-            }
-            
-            const beta = rsNew / rsOld;
-            for (let i = 0; i < n; i++) {
-                this.p[i] = r[i].add(this.p[i].scale(beta));
-            }
-            
-            rsOld = rsNew;
-        }
-        
-        return x;
-    }
-}
 
 function springEnergy(pos0: Vector3, pos1: Vector3, restLength: number, stiffness: number): number {
     const diff = pos1.subtract(pos0);
@@ -200,8 +77,6 @@ export class ImplicitSolver {
         }
         
         this.bsm = new BlockSparseMatrix();
-        
-        // Create sparse matrix structure
         const structure = this.createSparseMatrixStructure();
         this.bsm.initialize(structure.row2idx, structure.idx2col);
     }
@@ -215,11 +90,11 @@ export class ImplicitSolver {
         }
         
         // Add edge connections
-        for (let i = 0; i < this.numEdges; i++) {
-            const v0 = this.edges[i * 2];
-            const v1 = this.edges[i * 2 + 1];
-            adjacency.get(v0)!.add(v1);
-            adjacency.get(v1)!.add(v0);
+        for (let e = 0; e < this.numEdges; e++) {
+            const id0 = this.edges[e * 2];
+            const id1 = this.edges[e * 2 + 1];
+            adjacency.get(id0)!.add(id1);
+            adjacency.get(id1)!.add(id0);
         }
         
         // Build CSR structure
@@ -257,7 +132,7 @@ export class ImplicitSolver {
             else {
                 let p = this.getVector3(this.pos, i);
                 let v = this.getVector3(this.vel, i);
-                // v.addInPlace(g.scale(dt)); // Apply gravity
+                v.addInPlace(g.scale(dt)); // Apply gravity
                 p.addInPlace(v.scale(dt));
                 this.setVector3(this.inertiaPos, i, p);
                 this.setVector3(this.pos, i, p);
@@ -307,12 +182,12 @@ export class ImplicitSolver {
             }
 
             // Add gravity forces
-            for (let i = 0; i < this.numVertices; i++) {
-                const mass = this.masses[i];
-                const p = this.getVector3(this.pos, i);
-                gradient[i].subtractInPlace(g.scale(mass));
-                totalEnergy -= mass * Vector3.Dot(g, p);
-            }
+            // for (let i = 0; i < this.numVertices; i++) {
+            //     const mass = this.masses[i];
+            //     const p = this.getVector3(this.pos, i);
+            //     gradient[i].subtractInPlace(g.scale(mass));
+            //     totalEnergy -= mass * Vector3.Dot(g, p);
+            // }
 
             // Add mass matrix (mass_point / (timeStep * timeStep))
             for (let i = 0; i < this.numVertices; i++) {
