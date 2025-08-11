@@ -6,6 +6,7 @@ export interface Geometry {
     fixedVertices: Uint8Array;    // 0 or 1 per vertex
     edges: Uint32Array;           // [v0, v1, v2, v3, ...]
     stiffnesses: Float32Array;      // stiffness per edge
+    triangles?: Uint32Array; // optional, for triangle meshes
 }
 
 export function createCloth(
@@ -135,133 +136,94 @@ export function createChain(length: number, resolution: number, stiffness: numbe
 export function createTwoCloths(): Geometry {
     const width = 10;
     const height = 10;
-    const resolutionX = 5;
-    const resolutionY = 5;
+    const resolutionX = 2;
+    const resolutionY = 2;
     const stiffness = 100;
     const mass = 1.0;
 
     const numCols = resolutionX + 1;
     const numRows = resolutionY + 1;
     const verticesPerCloth = numCols * numRows;
-    const totalVertices = verticesPerCloth * 2; // Two cloths
+    const totalVertices = verticesPerCloth * 2;
 
-    // positions: Float32Array (3 floats per vertex)
     const pos = new Float32Array(totalVertices * 3);
 
-    // Fill positions for first cloth (y=5, fixed corners)
     for (let j = 0; j < numRows; j++) {
         for (let i = 0; i < numCols; i++) {
             const index = (j * numCols + i) * 3;
-            pos[index] = (i / resolutionX) * width - width / 2;   // x
-            pos[index + 1] = 5;                                   // y (fixed height)
-            pos[index + 2] = (j / resolutionY) * height - height / 2; // z
+            pos[index] = (i / resolutionX) * width - width / 2;
+            pos[index + 1] = 5;
+            pos[index + 2] = (j / resolutionY) * height - height / 2;
         }
     }
 
-    // Fill positions for second cloth (y=8, no fixed vertices)
     for (let j = 0; j < numRows; j++) {
         for (let i = 0; i < numCols; i++) {
             const index = (verticesPerCloth + j * numCols + i) * 3;
-            pos[index] = (i / resolutionX) * width - width / 2;   // x
-            pos[index + 1] = 8;                                   // y (higher position)
-            pos[index + 2] = (j / resolutionY) * height - height / 2; // z
+            pos[index] = (i / resolutionX) * width - width / 2;
+            pos[index + 1] = 8;
+            pos[index + 2] = (j / resolutionY) * height - height / 2;
         }
     }
 
-    // Build edges: horizontal, vertical, diagonal (shear)
     const edgesList: number[] = [];
+    const trianglesList: number[] = [];
 
-    // First cloth edges
-    // Horizontal edges
-    for (let j = 0; j < numRows; j++) {
+    for (let j = 0; j < resolutionY; j++) {
         for (let i = 0; i < resolutionX; i++) {
             const v0 = j * numCols + i;
             const v1 = v0 + 1;
-            edgesList.push(v0, v1);
+            const v2 = v0 + numCols;
+            const v3 = v2 + 1;
+
+            edgesList.push(v0, v1, v0, v2, v0, v3, v1, v2);
+            if (i === resolutionX - 1) edgesList.push(v1, v3);
+            if (j === resolutionY - 1) edgesList.push(v2, v3);
+            
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
         }
     }
 
-    // Vertical edges
-    for (let j = 0; j < resolutionY; j++) {
-        for (let i = 0; i < numCols; i++) {
-            const v0 = j * numCols + i;
-            const v1 = v0 + numCols;
-            edgesList.push(v0, v1);
-        }
-    }
-
-    // Diagonal (shear) edges
     for (let j = 0; j < resolutionY; j++) {
         for (let i = 0; i < resolutionX; i++) {
-            const topLeft = j * numCols + i;
-            const topRight = topLeft + 1;
-            const bottomLeft = topLeft + numCols;
-            const bottomRight = bottomLeft + 1;
-            edgesList.push(topLeft, bottomRight); // \
-            edgesList.push(topRight, bottomLeft); // /
-        }
-    }
-
-    // Second cloth edges (offset by verticesPerCloth)
-    // Horizontal edges
-    for (let j = 0; j < numRows; j++) {
-        for (let i = 0; i < resolutionX; i++) {
-            const v0 = verticesPerCloth + j * numCols + i;
+            const offset = verticesPerCloth;
+            const v0 = offset + j * numCols + i;
             const v1 = v0 + 1;
-            edgesList.push(v0, v1);
+            const v2 = v0 + numCols;
+            const v3 = v2 + 1;
+            
+            edgesList.push(v0, v1, v0, v2, v0, v3, v1, v2);
+            if (i === resolutionX - 1) edgesList.push(v1, v3);
+            if (j === resolutionY - 1) edgesList.push(v2, v3);
+
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
         }
     }
 
-    // Vertical edges
-    for (let j = 0; j < resolutionY; j++) {
-        for (let i = 0; i < numCols; i++) {
-            const v0 = verticesPerCloth + j * numCols + i;
-            const v1 = v0 + numCols;
-            edgesList.push(v0, v1);
-        }
-    }
-
-    // Diagonal (shear) edges
-    for (let j = 0; j < resolutionY; j++) {
-        for (let i = 0; i < resolutionX; i++) {
-            const topLeft = verticesPerCloth + j * numCols + i;
-            const topRight = topLeft + 1;
-            const bottomLeft = topLeft + numCols;
-            const bottomRight = bottomLeft + 1;
-            edgesList.push(topLeft, bottomRight); // \
-            edgesList.push(topRight, bottomLeft); // /
-        }
-    }
-
-    // Convert edgesList to Uint16Array
     const edges = new Uint32Array(edgesList);
-
-    // Create stiffness array: one stiffness per edge
+    const triangles = new Uint32Array(trianglesList);
     const stiffnesses = new Float32Array(edges.length / 2);
     stiffnesses.fill(stiffness);
 
-    // Create mass array: one mass per vertex
     const masses = new Float32Array(totalVertices);
     masses.fill(mass);
 
-    // fixedVertices: Uint8Array, default 0 (movable)
     const fixedVertices = new Uint8Array(totalVertices);
-    // Fix corners of the first cloth only (the second cloth at y=8 has no fixed vertices)
-    fixedVertices[0] = 1; // top-left corner of first cloth
-    fixedVertices[resolutionX] = 1; // top-right corner of first cloth
-    fixedVertices[verticesPerCloth - numCols] = 1; // bottom-left corner of first cloth
-    fixedVertices[verticesPerCloth - 1] = 1; // bottom-right corner of first cloth
+    fixedVertices[0] = 1;
+    fixedVertices[resolutionX] = 1;
+    fixedVertices[verticesPerCloth - numCols] = 1; 
+    fixedVertices[verticesPerCloth - 1] = 1;
 
-
-    const geometry = {
+    return {
         pos,
         masses,
         fixedVertices,
         edges,
         stiffnesses,
+        triangles
     };
-
-    return geometry;
 }
 
 export function createHighStiffnessRatioChain(): Geometry {
