@@ -425,3 +425,107 @@ export class SparseMatrix {
         return x;
     }
 }
+
+export class Matrix {
+  readonly rows: number;
+  readonly cols: number;
+  data: Float64Array;
+
+  constructor(rows: number, cols: number, values?: number[] | Float64Array) {
+    this.rows = rows;
+    this.cols = cols;
+    if (values) {
+      if (values.length !== rows * cols) {
+        throw new Error("Values length does not match matrix size");
+      }
+      this.data = new Float64Array(values);
+    } else {
+      this.data = new Float64Array(rows * cols);
+    }
+  }
+
+  get(r: number, c: number): number {
+    if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) {
+      throw new Error("Index out of bounds");
+    }
+    return this.data[r * this.cols + c];
+  }
+
+  set(r: number, c: number, val: number): void {
+    if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) {
+      throw new Error("Index out of bounds");
+    }
+    this.data[r * this.cols + c] = val;
+  }
+
+  setZero(): void {
+    this.data.fill(0);
+  }
+
+  static identity(size: number): Matrix {
+    const m = new Matrix(size, size);
+    for (let i = 0; i < size; i++) {
+      m.set(i, i, 1);
+    }
+    return m;
+  }
+
+  add(other: Matrix): Matrix {
+    if (this.rows !== other.rows || this.cols !== other.cols) {
+      throw new Error("Matrix size mismatch in add");
+    }
+    const result = new Matrix(this.rows, this.cols);
+    for (let i = 0; i < this.data.length; i++) {
+      result.data[i] = this.data[i] + other.data[i];
+    }
+    return result;
+  }
+
+  scale(scalar: number): Matrix {
+    const result = new Matrix(this.rows, this.cols);
+    for (let i = 0; i < this.data.length; i++) {
+      result.data[i] = this.data[i] * scalar;
+    }
+    return result;
+  }
+
+  multiply(other: Matrix): Matrix {
+    if (this.cols !== other.rows) {
+      throw new Error("Matrix size mismatch in multiply");
+    }
+    const result = new Matrix(this.rows, other.cols);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < other.cols; c++) {
+        let sum = 0;
+        for (let k = 0; k < this.cols; k++) {
+          sum += this.get(r, k) * other.get(k, c);
+        }
+        result.set(r, c, sum);
+      }
+    }
+    return result;
+  }
+
+  multiplyVector(x: number[]): number[] {
+    if (x.length !== this.cols) throw new Error("vector length mismatch");
+    const ret = new Array(this.rows);
+    for (let i = 0; i < this.rows; i++) {
+      let sum = 0;
+      for (let j = 0; j < this.cols; j++) {
+        sum += this.get(i, j) * x[j];
+      }
+      ret[i] = sum;
+    }
+    return ret;
+  }
+
+  transpose(): Matrix {
+    const result = new Matrix(this.cols, this.rows);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        result.set(c, r, this.get(r, c));
+      }
+    }
+    return result;
+  }
+}

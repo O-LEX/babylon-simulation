@@ -1,7 +1,124 @@
 import { Vector3 } from "@babylonjs/core";
-import { Triplet, SparseMatrix} from "./util";
+import { Triplet, SparseMatrix } from "./util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
+
+interface EnergyTerm {
+    offset: number;
+    getId(): number[];
+    getD(): Triplet[];
+    getW(): number[];
+    update(pos: Float32Array, z: Float32Array, u: Float32Array): void;
+}
+
+class SpringEnergyTerm implements EnergyTerm {
+    offset: number;
+    private id0: number;
+    private id1: number;
+    private stiffness: number;
+    private restLength: number;
+
+    constructor(id0: number, id1: number, stiffness: number, restLength: number) {
+        this.offset = 0;
+        this.id0 = id0;
+        this.id1 = id1;
+        this.stiffness = stiffness;
+        this.restLength = restLength;
+    }
+
+    update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
+        let z_i = new Vector3(z[this.offset], z[this.offset + 1], z[this.offset + 2]);
+        let u_i = new Vector3(u[this.offset], u[this.offset + 1], u[this.offset + 2]);
+        const p0 = new Vector3(pos[this.id0 * 3], pos[this.id0 * 3 + 1], pos[this.id0 * 3 + 2]);
+        const p1 = new Vector3(pos[this.id1 * 3], pos[this.id1 * 3 + 1], pos[this.id1 * 3 + 2]);
+        let q = p1.subtract(p0); // Dix
+        q.addInPlace(u_i); // Dix + ui
+        const q_length = q.length();
+        const p_i = q.scale(this.restLength / q_length);
+        z_i = p_i.add(q).scale(0.5);
+        u_i = q.subtract(z_i);
+        z[this.offset] = z_i.x;
+        z[this.offset + 1] = z_i.y;
+        z[this.offset + 2] = z_i.z;
+        u[this.offset] = u_i.x;
+        u[this.offset + 1] = u_i.y;
+        u[this.offset + 2] = u_i.z;
+    }
+
+    getId(): number[] {
+        return [this.id0, this.id1];
+    }
+
+    getD(): Triplet[] {
+        const D = [
+            [-1, 0, 0, 1, 0, 0],
+            [0, -1, 0, 0, 1, 0],
+            [0, 0, -1, 0, 0, 1],
+        ];
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 6; j++) {
+                triplets.push({ row: i, col: j, val: D[i][j] });
+            }
+        }
+        return triplets;
+    }
+
+    getW(): number[] {
+        const weight = Math.sqrt(this.stiffness);
+        return [weight, weight, weight];
+    }
+}
+
+class FixedEnergyTerm implements EnergyTerm {
+    offset: number;
+    private id: number;
+    private pos: Vector3;
+
+    constructor(id: number, pos: Vector3) {
+        this.offset = 0;
+        this.id = id;
+        this.pos = pos.clone();
+    }
+
+    update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
+        let u_i = new Vector3(u[this.offset], u[this.offset + 1], u[this.offset + 2]);
+        const p = new Vector3(pos[this.id * 3], pos[this.id * 3 + 1], pos[this.id * 3 + 2]);
+        const q = p.add(u_i); // Dix + ui
+        const z_i = this.pos;
+        u_i = q.subtract(z_i);
+        z[this.offset]     = z_i.x;
+        z[this.offset + 1] = z_i.y;
+        z[this.offset + 2] = z_i.z;
+        u[this.offset]     = u_i.x;
+        u[this.offset + 1] = u_i.y;
+        u[this.offset + 2] = u_i.z;
+    }
+
+    getId(): number[] {
+        return [this.id];
+    }
+
+    getD(): Triplet[] {
+        const D = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+        ];
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                triplets.push({ row: i, col: j, val: D[i][j] });
+            }
+        }
+        return triplets;
+    }
+
+    getW(): number[] {
+        const weight = 10000.0;
+        return [weight, weight, weight];
+    }
+}
 
 export class ADMMSolver {
     numVertices: number;
@@ -12,12 +129,9 @@ export class ADMMSolver {
     masses: Float32Array;    // Masses M
     fixedVertices: Uint8Array;
 
-    originalPos: Float32Array; // Original positions for fixed vertices
-
     numEdges: number;
     edges: Uint32Array;      // Spring connectivity info
     stiffnesses: Float32Array; // Spring stiffness k
-    restLengths: Float32Array; // Spring rest lengths L₀
 
     z: Float32Array;         // Local displacement vectors for each spring (m * 3 dimensions)
     u: Float32Array;         // Dual variables for each spring (m * 3 dimensions)
@@ -34,6 +148,8 @@ export class ADMMSolver {
 
     D_rows: number; // Number of rows in the reduction matrix D
 
+    energyTerms: EnergyTerm[];
+
     constructor(geometry: Geometry, params: Params) {
         this.numVertices = geometry.pos.length / 3;
         this.pos = new Float32Array(geometry.pos);
@@ -45,10 +161,7 @@ export class ADMMSolver {
         this.numEdges = geometry.edges.length / 2;
         this.edges = new Uint32Array(geometry.edges);
         this.stiffnesses = new Float32Array(geometry.stiffnesses);
-        this.restLengths = new Float32Array(this.numEdges);
         this.params = params;
-
-        this.originalPos = new Float32Array(this.pos); // Store original positions for fixed vertices
 
         this.D = new SparseMatrix();
         this.Dt = new SparseMatrix();
@@ -57,73 +170,62 @@ export class ADMMSolver {
         this.Dt_Wt_W = new SparseMatrix();
         this.A = new SparseMatrix();
 
+        this.energyTerms = [];
+
         for (let e = 0; e < this.numEdges; e++) {
             const id0 = this.edges[e * 2];
             const id1 = this.edges[e * 2 + 1];
-            
+            const stiffness = this.stiffnesses[e];
             const p0 = this.getVector3(this.pos, id0);
             const p1 = this.getVector3(this.pos, id1);
+            const restLength = Vector3.Distance(p0, p1);
+            this.energyTerms.push(new SpringEnergyTerm(id0, id1, stiffness, restLength));
+        }
 
-            this.restLengths[e] = Vector3.Distance(p0, p1);
+        for (let i = 0; i < this.numVertices; i++) {
+            if (this.fixedVertices[i]) {
+                const pos = this.getVector3(this.pos, i);
+                this.energyTerms.push(new FixedEnergyTerm(i, pos));
+            }
         }
 
         // Construct the reduction matrix D
-        // edge
         const D_triplets: Triplet[] = [];
-        for (let e = 0; e < this.numEdges; e++) {
-            const id0 = this.edges[e * 2];
-            const id1 = this.edges[e * 2 + 1];
-            const D_e = [[-1, 0, 0, 1, 0, 0], [0, -1, 0, 0, 1, 0], [0, 0, -1, 0, 0, 1]];
-            for (let i = 0; i < 3; i++) {
-                for (let j = 0; j < 3; j++) {
-                    D_triplets.push({ row: e * 3 + i, col: id0 * 3 + j, val: D_e[i][j] });
-                    D_triplets.push({ row: e * 3 + i, col: id1 * 3 + j, val: D_e[i][j + 3] });
-                }
+        const W_triplets: Triplet[] = [];
+        let offset = 0;
+
+        for (const term of this.energyTerms) {
+            term.offset = offset;
+            const localIndices = term.getId();
+            const localTriplets = term.getD();
+            const weights = term.getW();
+
+            for (const t of localTriplets) {
+                const globalNodeIndex = localIndices[Math.floor(t.col / 3)];
+                const globalCol = globalNodeIndex * 3 + (t.col % 3);
+                D_triplets.push({ row: offset + t.row, col: globalCol, val: t.val });
             }
+
+            for (let i = 0; i < weights.length; i++) {
+                W_triplets.push({ row: offset + i, col: offset + i, val: weights[i] });
+            }
+
+            offset += weights.length;
         }
 
-        // fixed vertices
-        let numFixed = 0;
-        for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) {
-                for (let j = 0; j < 3; j++) {
-                    D_triplets.push({ row: this.numEdges * 3 + numFixed * 3 + j, col: i * 3 + j, val: 1 });
-                }
-                numFixed++;
-            }
-        }
 
-        this.D_rows = this.numEdges * 3 + numFixed * 3; 
+        this.D_rows = offset;
+        this.D = new SparseMatrix();
         this.D.resize(this.D_rows, this.numVertices * 3);
         this.D.setFromTriplets(D_triplets);
         this.Dt = this.D.transpose();
 
-        this.z = new Float32Array(this.D_rows);
-        this.u = new Float32Array(this.D_rows);
-
-        // Construct the weight matrix W
-        // edge
-        const W_triplets: Triplet[] = [];
-        for (let e = 0; e < this.numEdges; e++) {
-            const weight = Math.sqrt(this.stiffnesses[e]);
-            for (let i = 0; i < 3; i++) {
-                W_triplets.push({ row: e * 3 + i, col: e * 3 + i, val: weight });
-            }
-        }
-
-        // fixed vertices
-        numFixed = 0;
-        for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) {
-                for (let j = 0; j < 3; j++) {
-                    W_triplets.push({ row: this.numEdges * 3 + numFixed * 3 + j, col: this.numEdges * 3 + numFixed * 3 + j, val: 10000 });
-                }
-                numFixed++;
-            }
-        }
-
+        this.W = new SparseMatrix();
         this.W.resize(this.D_rows, this.D_rows);
         this.W.setFromTriplets(W_triplets);
+
+        this.z = new Float32Array(this.D_rows);
+        this.u = new Float32Array(this.D_rows);
 
         // Precompute Dt * Wt * W
         const dt = this.params.dt / this.params.numSubsteps;
@@ -156,8 +258,6 @@ export class ADMMSolver {
         const invDt = 1 / dt;
 
         this.prevPos.set(this.pos);
-        this.z = this.D.multiplyVector(this.pos);
-        this.u.fill(0);
 
         // Compute inertia positions
         for (let i = 0; i < this.numVertices; i++) {
@@ -172,49 +272,15 @@ export class ADMMSolver {
             }
         }
 
+        // reset
+        this.z = this.D.multiplyVector(this.pos);
+        this.u.fill(0);
+
         // ADMM iterations
         for (let itr = 0; itr < this.params.numIterations; itr++) {
             // local step
-            // edge
-            for (let e = 0; e < this.numEdges; e++) {
-                const id0 = this.edges[e * 2];
-                const id1 = this.edges[e * 2 + 1];
-                const p0 = this.getVector3(this.pos, id0);
-                const p1 = this.getVector3(this.pos, id1);
-                const restLength = this.restLengths[e];
-                let z_e = this.getVector3(this.z, e);
-                let u_e = this.getVector3(this.u, e);
-
-                const Dix = p1.subtract(p0);
-                const q = Dix.add(u_e);
-
-                let proj = new Vector3(0, 0, 0);
-                const q_length = q.length();
-                if (q_length > 1e-9) {
-                    proj = q.scale(restLength / q_length);
-                }
-
-                z_e = proj.add(q).scale(0.5);
-                u_e = u_e.add(Dix).subtract(z_e);
-
-                this.setVector3(this.z, e, z_e);
-                this.setVector3(this.u, e, u_e);
-            }
-
-            // fixed vertices
-            let numFixed = 0;
-            for (let i = 0; i < this.numVertices; i++) {
-                if (this.fixedVertices[i]) {
-                    const p = this.getVector3(this.pos, i);
-                    let z_i = this.getVector3(this.z, this.numEdges + numFixed);
-                    let u_i = this.getVector3(this.u, this.numEdges + numFixed);
-                    const proj = this.getVector3(this.originalPos, i);
-                    z_i = proj;
-                    u_i = u_i.add(p).subtract(z_i);
-                    this.setVector3(this.z, this.numEdges + numFixed, z_i);
-                    this.setVector3(this.u, this.numEdges + numFixed, u_i);
-                    numFixed++;
-                }
+            for (const term of this.energyTerms) {
+                term.update(this.pos, this.z, this.u);
             }
 
             // global step
