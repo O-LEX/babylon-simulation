@@ -3,6 +3,73 @@ import { Triplet, SparseMatrix } from "./util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
 
+function pointTriangleDistanceAndNormal(
+    q0: Vector3,
+    q1: Vector3,
+    q2: Vector3
+): { dist: number; closest: Vector3; normal: Vector3 } {
+    // barycentric計算用の内積
+    const a = Vector3.Dot(q0, q0);
+    const b = Vector3.Dot(q0, q1);
+    const c = Vector3.Dot(q1, q1);
+    const d = Vector3.Dot(q0, q2);
+    const e = Vector3.Dot(q1, q2);
+
+    const denom = a * c - b * b;
+    let u = (c * d - b * e) / denom;
+    let v = (a * e - b * d) / denom;
+
+    let closest: Vector3;
+    let normal: Vector3;
+
+    // 内部判定
+    if (u >= 0 && v >= 0 && u + v <= 1) {
+        // 最近点は面上
+        closest = q0.scale(u).add(q1.scale(v));
+        normal = Vector3.Cross(q0, q1).normalize();
+
+        // 符号付き距離を使い法線の向きを決める
+        const sign = Math.sign(Vector3.Dot(q2.subtract(closest), normal));
+        normal = normal.scale(sign);
+
+        const dist = q2.subtract(closest).length();
+        return { dist: dist, closest, normal };
+    } else {
+        // 外部の場合は三辺の最近点を調べる
+        const candidates = [
+            closestPointOnSegment(Vector3.Zero(), q0, q2),
+            closestPointOnSegment(Vector3.Zero(), q1, q2),
+            closestPointOnSegment(q0, q1, q2),
+        ];
+
+        let minDist = Infinity;
+        let closestPt = candidates[0];
+        for (const pt of candidates) {
+            const dist = pt.subtract(q2).length();
+            if (dist < minDist) {
+                minDist = dist;
+                closestPt = pt;
+            }
+        }
+
+        const n = q2.subtract(closestPt);
+        if (n.length() > 1e-8) {
+            normal = n.normalize();
+        } else {
+            // 点と最近点がほぼ一致＝距離0のとき、法線は三角形法線を使う
+            normal = Vector3.Cross(q0, q1).normalize();
+        }
+
+        return { dist: minDist, closest: closestPt, normal };
+    }
+}
+
+function closestPointOnSegment(a: Vector3, b: Vector3, p: Vector3): Vector3 {
+    const ab = b.subtract(a);
+    const t = Math.max(0, Math.min(1, Vector3.Dot(p.subtract(a), ab) / Vector3.Dot(ab, ab)));
+    return a.add(ab.scale(t));
+}
+
 interface EnergyTerm {
     offset: number;
     getId(): number[];
@@ -145,10 +212,10 @@ class IPCEnergyTerm implements EnergyTerm {
         const p2  = new Vector3(pos[this.id2 * 3], pos[this.id2 * 3 + 1], pos[this.id2 * 3 + 2]);
         const p3  = new Vector3(pos[this.id3 * 3], pos[this.id3 * 3 + 1], pos[this.id3 * 3 + 2]);
 
-        const v0 = p0.subtract(p1);
-        const v1 = p2.subtract(p1);
-        const v2 = p3.subtract(p1);
-        
+        const v0 = p1.subtract(p0);
+        const v1 = p2.subtract(p0);
+        const v2 = p3.subtract(p0);
+
         let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
         let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
         let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
@@ -157,15 +224,14 @@ class IPCEnergyTerm implements EnergyTerm {
         const q1 = v1.add(u1);
         const q2 = v2.add(u2);
 
-        const n = Vector3.Cross(q1, q2).normalize();
-        const dist = Vector3.Dot(q0, n);
+        const {dist, closest, normal} = pointTriangleDistanceAndNormal(q0, q1, q2);
         const target = (dist + Math.sqrt(dist * dist + 4)) / 2.0;
-        let z0 = q0;
+        let z2 = q2;
         if (target < this.r/2 && target > 0) {
-            z0 = q0.add(n.scale(target - dist));
+            z2 = q2.add(normal.scale(target - dist));
         }
+        const z0 = q0;
         const z1 = q1;
-        const z2 = q2;
         u0 = q0.subtract(z0);
         u1 = q1.subtract(z1);
         u2 = q2.subtract(z2);
@@ -183,15 +249,15 @@ class IPCEnergyTerm implements EnergyTerm {
 
     getD(): Triplet[] {
         const D = [
-            [1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 1],
+            [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
         ];
         const triplets: Triplet[] = [];
         for (let i = 0; i < 9; i++) {
@@ -285,10 +351,11 @@ export class ADMMSolver {
             for (let i = 0; i < this.numVertices; i++) {
                 const id = i;
                 for (let j = 0; j < this.triangles.length; j += 3) {
+                    if (this.triangles[j] == id || this.triangles[j + 1] == id || this.triangles[j + 2] == id) continue;
                     const id0 = this.triangles[j];
                     const id1 = this.triangles[j + 1];
                     const id2 = this.triangles[j + 2];
-                    this.energyTerms.push(new IPCEnergyTerm(id, id0, id1, id2, 1000, 0.1));
+                    this.energyTerms.push(new IPCEnergyTerm(id0, id1, id2, id, 1000000, 0.1));
                 }
             }
         }
