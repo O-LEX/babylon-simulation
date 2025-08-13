@@ -136,8 +136,8 @@ export function createChain(length: number, resolution: number, stiffness: numbe
 export function createTwoCloths(): Geometry {
     const width = 10;
     const height = 10;
-    const resolutionX = 2;
-    const resolutionY = 2;
+    const resolutionX = 3;
+    const resolutionY = 3;
     const stiffness = 10000;
     const mass = 1.0;
 

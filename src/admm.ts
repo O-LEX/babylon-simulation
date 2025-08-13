@@ -191,13 +191,12 @@ class IPCEnergyTerm implements EnergyTerm {
 
         const d = normal.length();
         let z2 = y2;
-        if (d < this.r) {
+        if (d < this.r/2) {
+            const target = (d + Math.sqrt(d * d + 4)) / 2.0;
+            z2.addInPlace(normal.scale((target - d) / d));
+        } else if (d < this.r) {
             z2.addInPlace(normal.scale((this.r - d) / d));
-        }
-        // const target = (d + Math.sqrt(d * d + 4)) / 2.0;
-        // if (target < this.r) {
-        //     z2.addInPlace(normal.scale((target - d) / d));
-        // }
+        } 
         const z0 = y0;
         const z1 = y1;
         u0 = y0.subtract(z0);
@@ -325,7 +324,7 @@ export class ADMMSolver {
                     const t_id0 = this.triangles[j];
                     const t_id1 = this.triangles[j + 1];
                     const t_id2 = this.triangles[j + 2];
-                    this.energyTerms.push(new IPCEnergyTerm(t_id0, t_id1, t_id2, v_id, 1000000, 0.1));
+                    this.energyTerms.push(new IPCEnergyTerm(t_id0, t_id1, t_id2, v_id, 10000, 0.1));
                 }
             }
         }
