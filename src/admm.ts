@@ -1,74 +1,7 @@
 import { Vector3 } from "@babylonjs/core";
-import { Triplet, SparseMatrix } from "./util";
+import { Triplet, SparseMatrix, CholeskySolver } from "./util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
-
-function pointTriangleDistanceAndNormal(
-    q0: Vector3,
-    q1: Vector3,
-    q2: Vector3
-): { dist: number; closest: Vector3; normal: Vector3 } {
-    // barycentric計算用の内積
-    const a = Vector3.Dot(q0, q0);
-    const b = Vector3.Dot(q0, q1);
-    const c = Vector3.Dot(q1, q1);
-    const d = Vector3.Dot(q0, q2);
-    const e = Vector3.Dot(q1, q2);
-
-    const denom = a * c - b * b;
-    let u = (c * d - b * e) / denom;
-    let v = (a * e - b * d) / denom;
-
-    let closest: Vector3;
-    let normal: Vector3;
-
-    // 内部判定
-    if (u >= 0 && v >= 0 && u + v <= 1) {
-        // 最近点は面上
-        closest = q0.scale(u).add(q1.scale(v));
-        normal = Vector3.Cross(q0, q1).normalize();
-
-        // 符号付き距離を使い法線の向きを決める
-        const sign = Math.sign(Vector3.Dot(q2.subtract(closest), normal));
-        normal = normal.scale(sign);
-
-        const dist = q2.subtract(closest).length();
-        return { dist: dist, closest, normal };
-    } else {
-        // 外部の場合は三辺の最近点を調べる
-        const candidates = [
-            closestPointOnSegment(Vector3.Zero(), q0, q2),
-            closestPointOnSegment(Vector3.Zero(), q1, q2),
-            closestPointOnSegment(q0, q1, q2),
-        ];
-
-        let minDist = Infinity;
-        let closestPt = candidates[0];
-        for (const pt of candidates) {
-            const dist = pt.subtract(q2).length();
-            if (dist < minDist) {
-                minDist = dist;
-                closestPt = pt;
-            }
-        }
-
-        const n = q2.subtract(closestPt);
-        if (n.length() > 1e-8) {
-            normal = n.normalize();
-        } else {
-            // 点と最近点がほぼ一致＝距離0のとき、法線は三角形法線を使う
-            normal = Vector3.Cross(q0, q1).normalize();
-        }
-
-        return { dist: minDist, closest: closestPt, normal };
-    }
-}
-
-function closestPointOnSegment(a: Vector3, b: Vector3, p: Vector3): Vector3 {
-    const ab = b.subtract(a);
-    const t = Math.max(0, Math.min(1, Vector3.Dot(p.subtract(a), ab) / Vector3.Dot(ab, ab)));
-    return a.add(ab.scale(t));
-}
 
 interface EnergyTerm {
     offset: number;
@@ -98,12 +31,11 @@ class SpringEnergyTerm implements EnergyTerm {
         let u_i = new Vector3(u[this.offset], u[this.offset + 1], u[this.offset + 2]);
         const p0 = new Vector3(pos[this.id0 * 3], pos[this.id0 * 3 + 1], pos[this.id0 * 3 + 2]);
         const p1 = new Vector3(pos[this.id1 * 3], pos[this.id1 * 3 + 1], pos[this.id1 * 3 + 2]);
-        let q = p1.subtract(p0); // Dix
-        q.addInPlace(u_i); // Dix + ui
-        const q_length = q.length();
-        const p_i = q.scale(this.restLength / q_length);
-        z_i = p_i.add(q).scale(0.5);
-        u_i = q.subtract(z_i);
+        const y_i = p1.subtract(p0).add(u_i); // Dix + ui
+        const length = y_i.length();
+        const p_i = y_i.scale(this.restLength / length);
+        z_i = p_i.add(y_i).scale(0.5);
+        u_i = y_i.subtract(z_i);
         z[this.offset] = z_i.x;
         z[this.offset + 1] = z_i.y;
         z[this.offset + 2] = z_i.z;
@@ -141,19 +73,21 @@ class FixedEnergyTerm implements EnergyTerm {
     offset: number;
     private id: number;
     private pos: Vector3;
+    private stiffness: number;
 
-    constructor(id: number, pos: Vector3) {
+    constructor(id: number, pos: Vector3, stiffness: number) {
         this.offset = 0;
         this.id = id;
         this.pos = pos.clone();
+        this.stiffness = stiffness;
     }
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
         let u_i = new Vector3(u[this.offset], u[this.offset + 1], u[this.offset + 2]);
-        const p = new Vector3(pos[this.id * 3], pos[this.id * 3 + 1], pos[this.id * 3 + 2]);
-        const q = p.add(u_i); // Dix + ui
+        const p_i = new Vector3(pos[this.id * 3], pos[this.id * 3 + 1], pos[this.id * 3 + 2]);
+        const y_i = p_i.add(u_i); // Dix + ui
         const z_i = this.pos;
-        u_i = q.subtract(z_i);
+        u_i = y_i.subtract(z_i);
         z[this.offset]     = z_i.x;
         z[this.offset + 1] = z_i.y;
         z[this.offset + 2] = z_i.z;
@@ -182,35 +116,35 @@ class FixedEnergyTerm implements EnergyTerm {
     }
 
     getW(): number[] {
-        const weight = 10000.0;
+        const weight = 1000000.0;
         return [weight, weight, weight];
     }
 }
 
 class IPCEnergyTerm implements EnergyTerm {
     offset: number;
-    private id0: number;
-    private id1: number;
-    private id2: number;
-    private id3: number;
+    private t_id0: number;
+    private t_id1: number;
+    private t_id2: number;
+    private v_id: number;
     private stiffness: number;
     private r: number; // collision radius
 
-    constructor(id0: number, id1: number, id2: number, id3: number, stiffness: number, r: number) {
+    constructor(t_id0: number, t_id1: number, t_id2: number, v_id: number, stiffness: number, r: number) {
         this.offset = 0;
-        this.id0 = id0;
-        this.id1 = id1;
-        this.id2 = id2;
-        this.id3 = id3;
+        this.t_id0 = t_id0;
+        this.t_id1 = t_id1;
+        this.t_id2 = t_id2;
+        this.v_id = v_id;
         this.stiffness = stiffness;
         this.r = r;
     }
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
-        const p0   = new Vector3(pos[this.id0 * 3], pos[this.id0 * 3 + 1], pos[this.id0 * 3 + 2]);
-        const p1  = new Vector3(pos[this.id1 * 3], pos[this.id1 * 3 + 1], pos[this.id1 * 3 + 2]);
-        const p2  = new Vector3(pos[this.id2 * 3], pos[this.id2 * 3 + 1], pos[this.id2 * 3 + 2]);
-        const p3  = new Vector3(pos[this.id3 * 3], pos[this.id3 * 3 + 1], pos[this.id3 * 3 + 2]);
+        const p0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
+        const p1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
+        const p2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
+        const p3  = new Vector3(pos[this.v_id * 3], pos[this.v_id * 3 + 1], pos[this.v_id * 3 + 2]);
 
         const v0 = p1.subtract(p0);
         const v1 = p2.subtract(p0);
@@ -220,21 +154,55 @@ class IPCEnergyTerm implements EnergyTerm {
         let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
         let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
 
-        const q0 = v0.add(u0); // Dix + ui
-        const q1 = v1.add(u1);
-        const q2 = v2.add(u2);
+        const y0 = v0.add(u0); // Dix + ui
+        const y1 = v1.add(u1);
+        const y2 = v2.add(u2);
 
-        const {dist, closest, normal} = pointTriangleDistanceAndNormal(q0, q1, q2);
-        const target = (dist + Math.sqrt(dist * dist + 4)) / 2.0;
-        let z2 = q2;
-        if (target < this.r/2 && target > 0) {
-            z2 = q2.add(normal.scale(target - dist));
+        const d00 = Vector3.Dot(y0, y0);
+        const d01 = Vector3.Dot(y0, y1);
+        const d11 = Vector3.Dot(y1, y1);
+        const d02 = Vector3.Dot(y0, y2);
+        const d12 = Vector3.Dot(y1, y2);
+
+        const denom = d00 * d11 - d01 * d01;
+
+        const a = (d11 * d02 - d01 * d12) / denom;
+        const b = (d00 * d12 - d01 * d02) / denom;
+
+        let normal: Vector3;
+        if (a >= 0 && b >= 0 && a + b <= 1) {
+            // Inside the triangle
+            normal = y2.subtract(y0.scale(a).add(y1.scale(b)));
+        } else if (a < 0) {
+            // Closest to edge 0-2
+            const t = Math.max(0, Math.min(1, Vector3.Dot(y2, y1) / d11));
+            normal = y2.subtract(y1.scale(t));
+        } else if (b < 0) {
+            // Closest to edge 0-1
+            const t = Math.max(0, Math.min(1, Vector3.Dot(y2, y0) / d00));
+            normal = y2.subtract(y0.scale(t));
+        } else {
+            // Closest to edge 1-2
+            const edge0 = y1.subtract(y0);
+            const edge1 = y2.subtract(y0);
+            const t = Math.max(0, Math.min(1, Vector3.Dot(edge1, edge0) / Vector3.Dot(edge0, edge0)));
+            normal = y2.subtract(y0.add(edge0.scale(t)));
         }
-        const z0 = q0;
-        const z1 = q1;
-        u0 = q0.subtract(z0);
-        u1 = q1.subtract(z1);
-        u2 = q2.subtract(z2);
+
+        const d = normal.length();
+        let z2 = y2;
+        if (d < this.r) {
+            z2.addInPlace(normal.scale((this.r - d) / d));
+        }
+        // const target = (d + Math.sqrt(d * d + 4)) / 2.0;
+        // if (target < this.r) {
+        //     z2.addInPlace(normal.scale((target - d) / d));
+        // }
+        const z0 = y0;
+        const z1 = y1;
+        u0 = y0.subtract(z0);
+        u1 = y1.subtract(z1);
+        u2 = y2.subtract(z2);
         z[this.offset + 0] = z0.x; z[this.offset + 1] = z0.y; z[this.offset + 2] = z0.z;
         z[this.offset + 3] = z1.x; z[this.offset + 4] = z1.y; z[this.offset + 5] = z1.z;
         z[this.offset + 6] = z2.x; z[this.offset + 7] = z2.y; z[this.offset + 8] = z2.z;
@@ -244,7 +212,7 @@ class IPCEnergyTerm implements EnergyTerm {
     }
 
     getId(): number[] {
-        return [this.id0, this.id1, this.id2, this.id3];
+        return [this.t_id0, this.t_id1, this.t_id2, this.v_id];
     }
 
     getD(): Triplet[] {
@@ -306,6 +274,8 @@ export class ADMMSolver {
 
     energyTerms: EnergyTerm[];
 
+    choleskySolver: CholeskySolver;
+
     constructor(geometry: Geometry, params: Params) {
         this.numVertices = geometry.pos.length / 3;
         this.pos = new Float32Array(geometry.pos);
@@ -341,7 +311,7 @@ export class ADMMSolver {
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) {
                 const pos = this.getVector3(this.pos, i);
-                this.energyTerms.push(new FixedEnergyTerm(i, pos));
+                this.energyTerms.push(new FixedEnergyTerm(i, pos, 10000));
             }
         }
 
@@ -349,13 +319,13 @@ export class ADMMSolver {
         if (geometry.triangles) {
             this.triangles = new Uint32Array(geometry.triangles);
             for (let i = 0; i < this.numVertices; i++) {
-                const id = i;
+                const v_id = i;
                 for (let j = 0; j < this.triangles.length; j += 3) {
-                    if (this.triangles[j] == id || this.triangles[j + 1] == id || this.triangles[j + 2] == id) continue;
-                    const id0 = this.triangles[j];
-                    const id1 = this.triangles[j + 1];
-                    const id2 = this.triangles[j + 2];
-                    this.energyTerms.push(new IPCEnergyTerm(id0, id1, id2, id, 1000000, 0.1));
+                    if (this.triangles[j] == v_id || this.triangles[j + 1] == v_id || this.triangles[j + 2] == v_id) continue;
+                    const t_id0 = this.triangles[j];
+                    const t_id1 = this.triangles[j + 1];
+                    const t_id2 = this.triangles[j + 2];
+                    this.energyTerms.push(new IPCEnergyTerm(t_id0, t_id1, t_id2, v_id, 1000000, 0.1));
                 }
             }
         }
@@ -415,6 +385,8 @@ export class ADMMSolver {
         this.M.setFromTriplets(M_triplets);
 
         this.A = this.M.add(this.Dt_Wt_W.multiply(this.D));
+
+        this.choleskySolver = new CholeskySolver(this.A);
     }
 
     step(): void {
@@ -432,15 +404,12 @@ export class ADMMSolver {
 
         // Compute inertia positions
         for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
-            else {
-                let p = this.getVector3(this.pos, i);
-                let v = this.getVector3(this.vel, i);
-                v.addInPlace(g.scale(dt)); // Apply gravity
-                p.addInPlace(v.scale(dt));
-                this.setVector3(this.inertiaPos, i, p);
-                this.setVector3(this.pos, i, p);
-            }
+            let p = this.getVector3(this.pos, i);
+            let v = this.getVector3(this.vel, i);
+            v.addInPlace(g.scale(dt)); // Apply gravity
+            p.addInPlace(v.scale(dt));
+            this.setVector3(this.inertiaPos, i, p);
+            this.setVector3(this.pos, i, p);
         }
 
         // reset
@@ -466,7 +435,8 @@ export class ADMMSolver {
                 b[i] += Dt_Wt_W_z_minus_u[i];
             }
 
-            const x = this.A.conjugateGradientSolver(b);
+            const x = this.choleskySolver.solve(b);
+            // const x = this.A.conjugateGradientSolver(b);
             this.pos.set(x);
         }
 

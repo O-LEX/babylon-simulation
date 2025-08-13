@@ -160,9 +160,13 @@ export function createTwoCloths(): Geometry {
     for (let j = 0; j < numRows; j++) {
         for (let i = 0; i < numCols; i++) {
             const index = (verticesPerCloth + j * numCols + i) * 3;
-            pos[index] = (i / resolutionX) * width - width / 2;
+            const x = (i / resolutionX) * width - width / 2;
+            const z = (j / resolutionY) * height - height / 2;
+            const cos30 = Math.cos(Math.PI / 6);
+            const sin30 = Math.sin(Math.PI / 6);
+            pos[index] = x * cos30 - z * sin30;
             pos[index + 1] = 8;
-            pos[index + 2] = (j / resolutionY) * height - height / 2;
+            pos[index + 2] = x * sin30 + z * cos30;
         }
     }
 

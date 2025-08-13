@@ -210,15 +210,14 @@ export interface Triplet {
 }
 
 export class SparseMatrix {
-    private row2idx: number[] = [];
-    private idx2col: number[] = [];
-    private idx2val: number[] = [];
+    numRows = 0;
+    numCols = 0;
+    row2idx: number[] = [];
+    idx2col: number[] = [];
+    idx2val: number[] = [];
 
     private p: number[] = [];
     private Ap: number[] = [];
-
-    private numRows = 0;
-    private numCols = 0;
 
     // Set matrix size only (like Eigen::SparseMatrix::resize)
     resize(numRows: number, numCols: number): void {
@@ -528,4 +527,181 @@ export class Matrix {
     }
     return result;
   }
+}
+
+export class CholeskySolver {
+    private readonly n: number;
+    private L: SparseMatrix; // The lower triangular Cholesky factor, stored internally.
+
+    /**
+     * Creates a Cholesky solver. The decomposition is computed upon instantiation.
+     * @param A The symmetric positive-definite sparse matrix for the system Ax = b.
+     * @throws {Error} If the matrix is not square or not positive-definite.
+     */
+    constructor(A: SparseMatrix) {
+        if (A.numRows !== A.numCols) {
+            throw new Error("Matrix must be square.");
+        }
+        this.n = A.numRows;
+
+        // The Cholesky decomposition is performed once in the constructor.
+        this.L = this.computeCholeskyFactor(A);
+    }
+
+    /**
+     * Solves the linear system Ax = b for x.
+     * @param b The right-hand side vector of the equation.
+     * @returns The solution vector x.
+     */
+    public solve(b: Float32Array): Float32Array {
+        if (b.length !== this.n) {
+            throw new Error("Vector b has incorrect dimensions.");
+        }
+
+        // Step 1: Solve Ly = b using forward substitution.
+        const y = this.forwardSubstitution(b);
+
+        // Step 2: Solve L^T x = y using backward substitution.
+        const x = this.backwardSubstitution(y);
+
+        return x;
+    }
+
+    /**
+     * Computes the Cholesky decomposition A = LL^T. This is a private helper method.
+     * @param A The matrix to decompose.
+     * @returns The lower triangular factor L as a SparseMatrix.
+     */
+    private computeCholeskyFactor(A: SparseMatrix): SparseMatrix {
+        const n = A.numRows;
+        // Store rows of L in maps for efficient sparse access during computation.
+        const L_rows = Array.from({ length: n }, () => new Map<number, number>());
+
+        // Helper function to get a value from the input matrix A.
+        // This is slow for a large matrix, but simple. For production,
+        // a binary search within the row's column indices would be faster.
+        const getA = (row: number, col: number): number => {
+            const rowStart = A.row2idx[row];
+            const rowEnd = A.row2idx[row + 1];
+            for (let i = rowStart; i < rowEnd; i++) {
+                if (A.idx2col[i] === col) return A.idx2val[i];
+                if (A.idx2col[i] > col) break; // Columns are sorted
+            }
+            return 0;
+        };
+
+        // Compute L column by column
+        for (let j = 0; j < n; j++) {
+            let s_diag = 0;
+            const L_j_row = L_rows[j];
+
+            // Calculate the dot product needed for the diagonal element L(j,j).
+            // s_diag = Σ(k=0 to j-1) [L(j,k)]^2
+            for (const [k, val] of L_j_row.entries()) {
+                s_diag += val * val;
+            }
+
+            const Ajj = getA(j, j);
+            const val_under_sqrt = Ajj - s_diag;
+
+            // The matrix must be positive-definite, meaning this value must be positive.
+            if (val_under_sqrt <= 1e-9) {
+                throw new Error(`Matrix is not positive-definite. Failed at column ${j}.`);
+            }
+            const Ljj = Math.sqrt(val_under_sqrt);
+            L_rows[j].set(j, Ljj);
+
+            // Compute the off-diagonal elements in column j.
+            for (let i = j + 1; i < n; i++) {
+                let s_off_diag = 0;
+                // s_off_diag = Σ(k=0 to j-1) [L(i,k) * L(j,k)]
+                // This is a sparse dot product. Iterate over the shorter row for efficiency.
+                const L_i_row = L_rows[i];
+                const [iterMap, otherMap] = L_i_row.size < L_j_row.size ? [L_i_row, L_j_row] : [L_j_row, L_i_row];
+
+                for (const [k, val1] of iterMap.entries()) {
+                    if (k < j) {
+                        const val2 = otherMap.get(k) || 0;
+                        s_off_diag += val1 * val2;
+                    }
+                }
+
+                const Aij = getA(i, j);
+                const Lij = (Aij - s_off_diag) / Ljj;
+
+                // To maintain sparsity, only store non-zero elements.
+                if (Math.abs(Lij) > 1e-12) {
+                    L_rows[i].set(j, Lij);
+                }
+            }
+        }
+
+        // Convert the array of maps into the final CSR format for the L matrix.
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < n; i++) {
+            for (const [j, val] of L_rows[i].entries()) {
+                triplets.push({ row: i, col: j, val });
+            }
+        }
+
+        const L = new SparseMatrix();
+        L.resize(n, n);
+        L.setFromTriplets(triplets);
+        return L;
+    }
+
+    /**
+     * Solves the lower-triangular system Ly = b for y.
+     */
+    private forwardSubstitution(b: Float32Array): Float32Array {
+        const y = new Float32Array(this.n);
+        for (let i = 0; i < this.n; i++) {
+            let sum = 0;
+            const rowStart = this.L.row2idx[i];
+            const rowEnd = this.L.row2idx[i + 1];
+
+            // sum = Σ L(i,j) * y(j) for j < i
+            for (let idx = rowStart; idx < rowEnd; idx++) {
+                const j = this.L.idx2col[idx];
+                if (j < i) {
+                    sum += this.L.idx2val[idx] * y[j];
+                }
+            }
+            
+            // For a lower-triangular matrix in CSR, the diagonal L(i,i)
+            // is the last non-zero element in the row.
+            const Lii = this.L.idx2val[rowEnd - 1];
+            y[i] = (b[i] - sum) / Lii;
+        }
+        return y;
+    }
+
+    /**
+     * Solves the upper-triangular system L^T x = y for x.
+     */
+    private backwardSubstitution(y: Float32Array): Float32Array {
+        const x = new Float32Array(this.n);
+        // Using an explicit transpose simplifies the implementation significantly.
+        const LT = this.L.transpose();
+
+        for (let i = this.n - 1; i >= 0; i--) {
+            let sum = 0;
+            const rowStart = LT.row2idx[i];
+            const rowEnd = LT.row2idx[i + 1];
+
+            // sum = Σ L^T(i,j) * x(j) for j > i
+            for (let idx = rowStart; idx < rowEnd; idx++) {
+                const j = LT.idx2col[idx];
+                if (j > i) {
+                    sum += LT.idx2val[idx] * x[j];
+                }
+            }
+
+            // For an upper-triangular matrix (L^T), the diagonal L^T(i,i)
+            // is the first non-zero element in the row.
+            const LTii = LT.idx2val[rowStart];
+            x[i] = (y[i] - sum) / LTii;
+        }
+        return x;
+    }
 }
