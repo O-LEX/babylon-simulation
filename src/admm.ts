@@ -13,16 +13,16 @@ interface EnergyTerm {
 
 class SpringEnergyTerm implements EnergyTerm {
     offset: number;
+    private stiffness: number;
     private id0: number;
     private id1: number;
-    private stiffness: number;
     private restLength: number;
 
-    constructor(id0: number, id1: number, stiffness: number, restLength: number) {
-        this.offset = 0;
+    constructor(offset: number, stiffness: number, id0: number, id1: number, restLength: number) {
+        this.offset = offset;
+        this.stiffness = stiffness;
         this.id0 = id0;
         this.id1 = id1;
-        this.stiffness = stiffness;
         this.restLength = restLength;
     }
 
@@ -71,15 +71,15 @@ class SpringEnergyTerm implements EnergyTerm {
 
 class FixedEnergyTerm implements EnergyTerm {
     offset: number;
+    private stiffness: number;
     private id: number;
     private pos: Vector3;
-    private stiffness: number;
 
-    constructor(id: number, pos: Vector3, stiffness: number) {
-        this.offset = 0;
+    constructor(offset: number, stiffness: number, id: number, pos: Vector3) {
+        this.offset = offset;
+        this.stiffness = stiffness;
         this.id = id;
         this.pos = pos.clone();
-        this.stiffness = stiffness;
     }
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
@@ -116,27 +116,27 @@ class FixedEnergyTerm implements EnergyTerm {
     }
 
     getW(): number[] {
-        const weight = 1000000.0;
+        const weight = this.stiffness;
         return [weight, weight, weight];
     }
 }
 
-class IPCEnergyTerm implements EnergyTerm {
+class IPCTriangleEnergyTerm implements EnergyTerm {
     offset: number;
+    private stiffness: number;
     private t_id0: number;
     private t_id1: number;
     private t_id2: number;
     private v_id: number;
-    private stiffness: number;
     private r: number; // collision radius
 
-    constructor(t_id0: number, t_id1: number, t_id2: number, v_id: number, stiffness: number, r: number) {
-        this.offset = 0;
+    constructor(offset:number, stiffness: number, t_id0: number, t_id1: number, t_id2: number, v_id: number, r: number) {
+        this.offset = offset;
+        this.stiffness = stiffness;
         this.t_id0 = t_id0;
         this.t_id1 = t_id1;
         this.t_id2 = t_id2;
         this.v_id = v_id;
-        this.stiffness = stiffness;
         this.r = r;
     }
 
@@ -146,17 +146,17 @@ class IPCEnergyTerm implements EnergyTerm {
         const p2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
         const p3  = new Vector3(pos[this.v_id * 3], pos[this.v_id * 3 + 1], pos[this.v_id * 3 + 2]);
 
-        const v0 = p1.subtract(p0);
-        const v1 = p2.subtract(p0);
-        const v2 = p3.subtract(p0);
+        const e0 = p1.subtract(p0);
+        const e1 = p2.subtract(p0);
+        const e2 = p3.subtract(p0);
 
         let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
         let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
         let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
 
-        const y0 = v0.add(u0); // Dix + ui
-        const y1 = v1.add(u1);
-        const y2 = v2.add(u2);
+        const y0 = e0.add(u0); // Dix + ui
+        const y1 = e1.add(u1);
+        const y2 = e2.add(u2);
 
         const d00 = Vector3.Dot(y0, y0);
         const d01 = Vector3.Dot(y0, y1);
@@ -241,6 +241,64 @@ class IPCEnergyTerm implements EnergyTerm {
     }
 }
 
+// class IPCEdgeEnergyTerm implements EnergyTerm {
+//     offset: number;
+//     private stiffness: number;
+//     private e0_id0: number;
+//     private e0_id1: number;
+//     private e1_id0: number;
+//     private e1_id1: number;
+//     private r: number;
+//     constructor(offset:number, stiffness: number, e0_id0: number, e0_id1: number, e1_id0: number, e1_id1: number, r: number) {
+//         this.offset = offset;
+//         this.stiffness = stiffness;
+//         this.e0_id0 = e0_id0;
+//         this.e0_id1 = e0_id1;
+//         this.e1_id0 = e1_id0;
+//         this.e1_id1 = e1_id1;
+//         this.r = r;
+//     }
+
+//     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
+//         const p0   = new Vector3(pos[this.e0_id0 * 3], pos[this.e0_id0 * 3 + 1], pos[this.e0_id0 * 3 + 2]);
+//         const p1 = new Vector3(pos[this.e0_id1 * 3], pos[this.e0_id1 * 3 + 1], pos[this.e0_id1 * 3 + 2]);
+//         const q0 = new Vector3(pos[this.e1_id0 * 3], pos[this.e1_id0 * 3 + 1], pos[this.e1_id0 * 3 + 2]);
+//         const q1 = new Vector3(pos[this.e1_id1 * 3], pos[this.e1_id1 * 3 + 1], pos[this.e1_id1 * 3 + 2]);
+
+//     }
+
+//     getId(): number[] {
+//         return [this.e0_id0, this.e0_id1, this.e1_id0, this.e1_id1];
+//     }
+
+//     getD(): Triplet[] {
+//         const D = [
+//             [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+//             [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+//             [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+//             [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+//             [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+//             [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+//             [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+//             [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+//             [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+//         ];
+
+//         const triplets: Triplet[] = [];
+//         for (let i = 0; i < 9; i++) {
+//             for (let j = 0; j < 12; j++) {
+//                 triplets.push({ row: i, col: j, val: D[i][j] });
+//             }
+//         }
+//         return triplets;
+//     }
+
+//     getW(): number[] {
+//         const weight = Math.sqrt(this.stiffness);
+//         return Array(9).fill(weight);
+//     }
+// }
+
 export class ADMMSolver {
     numVertices: number;
     pos: Float32Array;       // Current vertex positions x
@@ -296,7 +354,9 @@ export class ADMMSolver {
         this.A = new SparseMatrix();
 
         this.energyTerms = [];
+        let offset = 0;
 
+        // spring
         for (let e = 0; e < this.numEdges; e++) {
             const id0 = this.edges[e * 2];
             const id1 = this.edges[e * 2 + 1];
@@ -304,19 +364,24 @@ export class ADMMSolver {
             const p0 = this.getVector3(this.pos, id0);
             const p1 = this.getVector3(this.pos, id1);
             const restLength = Vector3.Distance(p0, p1);
-            this.energyTerms.push(new SpringEnergyTerm(id0, id1, stiffness, restLength));
+            this.energyTerms.push(new SpringEnergyTerm(offset, stiffness,id0, id1, restLength));
+            offset += 3;
         }
 
+        // fixed vertices
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) {
                 const pos = this.getVector3(this.pos, i);
-                this.energyTerms.push(new FixedEnergyTerm(i, pos, 10000));
+                const stiffness = 10000;
+                this.energyTerms.push(new FixedEnergyTerm(offset, stiffness, i, pos));
+                offset += 3;
             }
         }
 
         // ipc
         if (geometry.triangles) {
             this.triangles = new Uint32Array(geometry.triangles);
+            const stiffness = 10000;
             for (let i = 0; i < this.numVertices; i++) {
                 const v_id = i;
                 for (let j = 0; j < this.triangles.length; j += 3) {
@@ -324,7 +389,8 @@ export class ADMMSolver {
                     const t_id0 = this.triangles[j];
                     const t_id1 = this.triangles[j + 1];
                     const t_id2 = this.triangles[j + 2];
-                    this.energyTerms.push(new IPCEnergyTerm(t_id0, t_id1, t_id2, v_id, 10000, 0.1));
+                    this.energyTerms.push(new IPCTriangleEnergyTerm(offset, stiffness, t_id0, t_id1, t_id2, v_id, 0.1));
+                    offset += 9; // Each IPC term has 9 entries in z and u
                 }
             }
         }
@@ -332,25 +398,22 @@ export class ADMMSolver {
         // Construct the reduction matrix D
         const D_triplets: Triplet[] = [];
         const W_triplets: Triplet[] = [];
-        let offset = 0;
 
         for (const term of this.energyTerms) {
-            term.offset = offset;
-            const localIndices = term.getId();
-            const localTriplets = term.getD();
+            const offset = term.offset;
+            const ids = term.getId();
+            const triplets = term.getD();
             const weights = term.getW();
 
-            for (const t of localTriplets) {
-                const globalNodeIndex = localIndices[Math.floor(t.col / 3)];
-                const globalCol = globalNodeIndex * 3 + (t.col % 3);
+            for (const t of triplets) {
+                const id = ids[Math.floor(t.col / 3)];
+                const globalCol = id * 3 + (t.col % 3);
                 D_triplets.push({ row: offset + t.row, col: globalCol, val: t.val });
             }
 
             for (let i = 0; i < weights.length; i++) {
                 W_triplets.push({ row: offset + i, col: offset + i, val: weights[i] });
             }
-
-            offset += weights.length;
         }
 
 
