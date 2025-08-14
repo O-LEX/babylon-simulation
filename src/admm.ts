@@ -2,6 +2,7 @@ import { Vector3 } from "@babylonjs/core";
 import { Triplet, SparseMatrix, CholeskySolver } from "./util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
+import { sign } from "crypto";
 
 interface EnergyTerm {
     offset: number;
@@ -124,72 +125,85 @@ class FixedEnergyTerm implements EnergyTerm {
 class IPCTriangleEnergyTerm implements EnergyTerm {
     offset: number;
     private stiffness: number;
+    private v_id: number;
     private t_id0: number;
     private t_id1: number;
     private t_id2: number;
-    private v_id: number;
     private r: number; // collision radius
 
-    constructor(offset:number, stiffness: number, t_id0: number, t_id1: number, t_id2: number, v_id: number, r: number) {
+    constructor(offset:number, stiffness: number, v_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
         this.offset = offset;
         this.stiffness = stiffness;
+        this.v_id = v_id;
         this.t_id0 = t_id0;
         this.t_id1 = t_id1;
         this.t_id2 = t_id2;
-        this.v_id = v_id;
         this.r = r;
     }
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
-        const p0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
-        const p1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
-        const p2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
-        const p3  = new Vector3(pos[this.v_id * 3], pos[this.v_id * 3 + 1], pos[this.v_id * 3 + 2]);
+        const p  = new Vector3(pos[this.v_id * 3], pos[this.v_id * 3 + 1], pos[this.v_id * 3 + 2]);
+        const t0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
+        const t1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
+        const t2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
 
-        const e0 = p1.subtract(p0);
-        const e1 = p2.subtract(p0);
-        const e2 = p3.subtract(p0);
+        const p0 = p.subtract(t0);
+        const p1 = p.subtract(t1);
+        const p2 = p.subtract(t2);
 
         let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
         let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
         let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
 
-        const y0 = e0.add(u0); // Dix + ui
-        const y1 = e1.add(u1);
-        const y2 = e2.add(u2);
+        const y0 = p0.add(u0); // Dix + ui
+        const y1 = p1.add(u1);
+        const y2 = p2.add(u2);
 
-        const d00 = Vector3.Dot(y0, y0);
-        const d01 = Vector3.Dot(y0, y1);
-        const d11 = Vector3.Dot(y1, y1);
-        const d02 = Vector3.Dot(y0, y2);
-        const d12 = Vector3.Dot(y1, y2);
+        const v10 = y1.subtract(y0);
+        const v21 = y2.subtract(y1);
+        const v02 = y0.subtract(y2);
 
-        const denom = d00 * d11 - d01 * d01;
+        const nor = Vector3.Cross(v10, v02);
 
-        const a = (d11 * d02 - d01 * d12) / denom;
-        const b = (d00 * d12 - d01 * d02) / denom;
+        const s0 = Math.sign(Vector3.Dot(Vector3.Cross(v10, nor), y0));
+        const s1 = Math.sign(Vector3.Dot(Vector3.Cross(v21, nor), y1));
+        const s2 = Math.sign(Vector3.Dot(Vector3.Cross(v02, nor), y2));
 
-        let normal: Vector3;
-        if (a >= 0 && b >= 0 && a + b <= 1) {
-            // Inside the triangle
-            normal = y2.subtract(y0.scale(a).add(y1.scale(b)));
-        } else if (a < 0) {
-            // Closest to edge 0-2
-            const t = Math.max(0, Math.min(1, Vector3.Dot(y2, y1) / d11));
-            normal = y2.subtract(y1.scale(t));
-        } else if (b < 0) {
-            // Closest to edge 0-1
-            const t = Math.max(0, Math.min(1, Vector3.Dot(y2, y0) / d00));
-            normal = y2.subtract(y0.scale(t));
+        let dist2: number;
+        let bary: [number, number, number];
+
+        if (s0 + s1 + s2 >= 2) {
+            dist2 = Vector3.Dot(nor, y0) ** 2 / nor.lengthSquared();
+            const areaABC = nor.length();
+            const w0 = Vector3.Cross(y1, y2).length() / areaABC;
+            const w1 = Vector3.Cross(y2, y0).length() / areaABC;
+            const w2 = 1 - w0 - w1;
+            bary = [w0, w1, w2];
         } else {
-            // Closest to edge 1-2
-            const edge0 = y1.subtract(y0);
-            const edge1 = y2.subtract(y0);
-            const t = Math.max(0, Math.min(1, Vector3.Dot(edge1, edge0) / Vector3.Dot(edge0, edge0)));
-            normal = y2.subtract(y0.add(edge0.scale(t)));
+            const edgeDist2 = (e: Vector3, y: Vector3): {d2: number, t: number} => {
+                const t = Math.max(0, Math.min(1, Vector3.Dot(e, y) / e.lengthSquared()));
+                const proj = e.scale(t).subtract(y);
+                return { d2: proj.lengthSquared(), t };
+            };
+
+            const d0 = edgeDist2(v10, y0);
+            const d1 = edgeDist2(v21, y1);
+            const d2 = edgeDist2(v02, y2);
+
+            if (d0.d2 <= d1.d2 && d0.d2 <= d2.d2) {
+                dist2 = d0.d2;
+                bary = [1 - d0.t, d0.t, 0];
+            } else if (d1.d2 <= d0.d2 && d1.d2 <= d2.d2) {
+                dist2 = d1.d2;
+                bary = [0, 1 - d1.t, d1.t];
+            } else {
+                dist2 = d2.d2;
+                bary = [d2.t, 0, 1 - d2.t];
+            }
         }
 
-        const d = normal.length();
+        const d = Math.sqrt(dist2);
+
         let z2 = y2;
         if (d < this.r/2) {
             const target = (d + Math.sqrt(d * d + 4)) / 2.0;
