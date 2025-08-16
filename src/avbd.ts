@@ -2,7 +2,7 @@ import { Geometry } from "./geometry";
 import { Params } from "./params";
 import { VBDSolver } from "./vbd";
 import { Vector3 } from "@babylonjs/core";
-import { Matrix3x3 } from "./util";
+import { Matrix3x3 } from "./math/util";
 
 export class AVBDSolver extends VBDSolver {
     lambdas: Float32Array; 

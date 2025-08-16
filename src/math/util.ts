@@ -47,6 +47,17 @@ export class Matrix3x3 {
         return result;
     }
 
+    transpose(): Matrix3x3 {
+        const m = new Matrix3x3();
+        const d = this.data;
+        m.data = [
+            d[0], d[3], d[6],
+            d[1], d[4], d[7],
+            d[2], d[5], d[8]
+        ];
+        return m;
+    }
+
     multiplyVector(v: Vector3): Vector3 {
         return new Vector3(
             this.data[0] * v.x + this.data[1] * v.y + this.data[2] * v.z,

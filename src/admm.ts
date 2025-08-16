@@ -1,5 +1,5 @@
 import { Vector3 } from "@babylonjs/core";
-import { Triplet, SparseMatrix, CholeskySolver } from "./util";
+import { Triplet, SparseMatrix, CholeskySolver } from "./math/util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
 import { sign } from "crypto";

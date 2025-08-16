@@ -1,5 +1,5 @@
 import { Vector3 } from "@babylonjs/core";
-import { Matrix3x3, BlockSparseMatrix } from "./util";
+import { Matrix3x3, BlockSparseMatrix } from "./math/util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
 
