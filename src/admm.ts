@@ -167,15 +167,15 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         let z0 = y0;
         let z1 = y1;
         let z2 = y2;
-        // if (d2 < r2) {
-        //     const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
-        //     const parameters = [...y];
-        //     const ipc = new IPCOptimizable(this.r, y);
-        //     const converged = limitedMemoryBFGS(ipc, parameters);
-        //     z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
-        //     z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
-        //     z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
-        // }
+        if (d2 < r2) {
+            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+            const parameters = [...y];
+            const ipc = new IPCOptimizable(this.r, y);
+            const converged = limitedMemoryBFGS(ipc, parameters);
+            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        }
         u0 = y0.subtract(z0);
         u1 = y1.subtract(z1);
         u2 = y2.subtract(z2);
