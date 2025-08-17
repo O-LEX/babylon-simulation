@@ -133,10 +133,10 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
     private t_id2: number;
     private r: number; // collision radius
 
-    constructor(offset:number, stiffness: number, v_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
+    constructor(offset:number, stiffness: number, p_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
         this.offset = offset;
         this.stiffness = stiffness;
-        this.p_id = v_id;
+        this.p_id = p_id;
         this.t_id0 = t_id0;
         this.t_id1 = t_id1;
         this.t_id2 = t_id2;
@@ -164,18 +164,18 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         const d2 = PT.val(y0, y1, y2);
         const r2 = this.r * this.r;
 
-        let z0 = y0;
-        let z1 = y1;
-        let z2 = y2;
-        if (d2 < r2) {
-            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
-            const parameters = [...y];
-            const ipc = new IPCOptimizable(this.r, y);
-            const converged = limitedMemoryBFGS(ipc, parameters);
-            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
-            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
-            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
-        }
+        let z0 = y0.clone();
+        let z1 = y1.clone();
+        let z2 = y2.clone();
+        // if (d2 < r2) {
+        //     const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+        //     const parameters = [...y];
+        //     const ipc = new IPCOptimizable(this.r, y);
+        //     const converged = limitedMemoryBFGS(ipc, parameters);
+        //     z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+        //     z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+        //     z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        // }
         u0 = y0.subtract(z0);
         u1 = y1.subtract(z1);
         u2 = y2.subtract(z2);
@@ -217,64 +217,6 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         return Array(9).fill(weight);
     }
 }
-
-// class IPCEdgeEnergyTerm implements EnergyTerm {
-//     offset: number;
-//     private stiffness: number;
-//     private e0_id0: number;
-//     private e0_id1: number;
-//     private e1_id0: number;
-//     private e1_id1: number;
-//     private r: number;
-//     constructor(offset:number, stiffness: number, e0_id0: number, e0_id1: number, e1_id0: number, e1_id1: number, r: number) {
-//         this.offset = offset;
-//         this.stiffness = stiffness;
-//         this.e0_id0 = e0_id0;
-//         this.e0_id1 = e0_id1;
-//         this.e1_id0 = e1_id0;
-//         this.e1_id1 = e1_id1;
-//         this.r = r;
-//     }
-
-//     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
-//         const p0   = new Vector3(pos[this.e0_id0 * 3], pos[this.e0_id0 * 3 + 1], pos[this.e0_id0 * 3 + 2]);
-//         const p1 = new Vector3(pos[this.e0_id1 * 3], pos[this.e0_id1 * 3 + 1], pos[this.e0_id1 * 3 + 2]);
-//         const q0 = new Vector3(pos[this.e1_id0 * 3], pos[this.e1_id0 * 3 + 1], pos[this.e1_id0 * 3 + 2]);
-//         const q1 = new Vector3(pos[this.e1_id1 * 3], pos[this.e1_id1 * 3 + 1], pos[this.e1_id1 * 3 + 2]);
-
-//     }
-
-//     getId(): number[] {
-//         return [this.e0_id0, this.e0_id1, this.e1_id0, this.e1_id1];
-//     }
-
-//     getD(): Triplet[] {
-//         const D = [
-//             [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-//             [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-//             [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-//             [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-//             [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-//             [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-//             [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-//             [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-//             [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-//         ];
-
-//         const triplets: Triplet[] = [];
-//         for (let i = 0; i < 9; i++) {
-//             for (let j = 0; j < 12; j++) {
-//                 triplets.push({ row: i, col: j, val: D[i][j] });
-//             }
-//         }
-//         return triplets;
-//     }
-
-//     getW(): number[] {
-//         const weight = Math.sqrt(this.stiffness);
-//         return Array(9).fill(weight);
-//     }
-// }
 
 export class ADMMSolver {
     numVertices: number;
@@ -360,13 +302,13 @@ export class ADMMSolver {
             this.triangles = new Uint32Array(geometry.triangles);
             const stiffness = 10000;
             for (let i = 0; i < this.numVertices; i++) {
-                const v_id = i;
+                const p_id = i;
                 for (let j = 0; j < this.triangles.length; j += 3) {
-                    if (this.triangles[j] == v_id || this.triangles[j + 1] == v_id || this.triangles[j + 2] == v_id) continue;
+                    if (this.triangles[j] == p_id || this.triangles[j + 1] == p_id || this.triangles[j + 2] == p_id) continue;
                     const t_id0 = this.triangles[j];
                     const t_id1 = this.triangles[j + 1];
                     const t_id2 = this.triangles[j + 2];
-                    this.energyTerms.push(new IPCTriangleEnergyTerm(offset, stiffness, v_id, t_id0, t_id1, t_id2, 0.1));
+                    this.energyTerms.push(new IPCTriangleEnergyTerm(offset, stiffness, p_id, t_id0, t_id1, t_id2, 0.1));
                     offset += 9; // Each IPC term has 9 entries in z and u
                 }
             }
