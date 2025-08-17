@@ -11,7 +11,6 @@ import { XPBDSolver } from "./xpbd";
 import { AVBDSolver } from "./avbd";
 import { ADMMSolver } from "./admm";
 import { runAllLBFGSExamples } from "./lbfgs-example";
-import { run } from "node:test";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
