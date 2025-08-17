@@ -4,7 +4,7 @@ import { Geometry } from "./geometry";
 import { Params } from "./params";
 import * as PT from "./math/PointTriangleDistance";
 import { IPCOptimizable } from "./math/ipc";
-import { limitedMemoryBFGS, QuadraticOptimizable, RidgeRegression } from './math/lbfgs';
+import { limitedMemoryBFGS } from './math/lbfgs';
 
 interface EnergyTerm {
     offset: number;
@@ -127,7 +127,7 @@ class FixedEnergyTerm implements EnergyTerm {
 class IPCTriangleEnergyTerm implements EnergyTerm {
     offset: number;
     private stiffness: number;
-    private v_id: number;
+    private p_id: number;
     private t_id0: number;
     private t_id1: number;
     private t_id2: number;
@@ -136,7 +136,7 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
     constructor(offset:number, stiffness: number, v_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
         this.offset = offset;
         this.stiffness = stiffness;
-        this.v_id = v_id;
+        this.p_id = v_id;
         this.t_id0 = t_id0;
         this.t_id1 = t_id1;
         this.t_id2 = t_id2;
@@ -144,7 +144,7 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
     }
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
-        const p  = new Vector3(pos[this.v_id * 3], pos[this.v_id * 3 + 1], pos[this.v_id * 3 + 2]);
+        const p  = new Vector3(pos[this.p_id * 3], pos[this.p_id * 3 + 1], pos[this.p_id * 3 + 2]);
         const t0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
         const t1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
         const t2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
@@ -167,15 +167,15 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         let z0 = y0;
         let z1 = y1;
         let z2 = y2;
-        if (d2 < r2) {
-            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
-            const parameters = [...y];
-            const ipc = new IPCOptimizable(this.r, y);
-            const converged = limitedMemoryBFGS(ipc, parameters);
-            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
-            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
-            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
-        }
+        // if (d2 < r2) {
+        //     const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+        //     const parameters = [...y];
+        //     const ipc = new IPCOptimizable(this.r, y);
+        //     const converged = limitedMemoryBFGS(ipc, parameters);
+        //     z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+        //     z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+        //     z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        // }
         u0 = y0.subtract(z0);
         u1 = y1.subtract(z1);
         u2 = y2.subtract(z2);
@@ -188,7 +188,7 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
     }
 
     getId(): number[] {
-        return [this.v_id, this.t_id0, this.t_id1, this.t_id2];
+        return [this.p_id, this.t_id0, this.t_id1, this.t_id2];
     }
 
     getD(): Triplet[] {

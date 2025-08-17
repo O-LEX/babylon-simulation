@@ -133,6 +133,92 @@ export function createChain(length: number, resolution: number, stiffness: numbe
     return geometry;
 }
 
+export function createFixedCloth(
+    width: number,
+    height: number,
+    resolutionX: number,
+    resolutionY: number,
+    stiffness: number = 100,
+    mass: number = 1.0
+): Geometry {
+    const numCols = resolutionX + 1;
+    const numRows = resolutionY + 1;
+    const totalVertices = numCols * numRows;
+
+    // positions: Float32Array (3 floats per vertex)
+    const pos = new Float32Array(totalVertices * 3);
+
+    // Fill positions
+    for (let j = 0; j < numRows; j++) {
+        for (let i = 0; i < numCols; i++) {
+            const index = (j * numCols + i) * 3;
+            pos[index] = (i / resolutionX) * width - width / 2;   // x
+            pos[index + 1] = 5;                                   // y (fixed height)
+            pos[index + 2] = (j / resolutionY) * height - height / 2; // z
+        }
+    }
+
+    // Build edges: horizontal, vertical, diagonal (shear)
+    const edgesList: number[] = [];
+
+    // Horizontal edges
+    for (let j = 0; j < numRows; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const v0 = j * numCols + i;
+            const v1 = v0 + 1;
+            edgesList.push(v0, v1);
+        }
+    }
+
+    // Vertical edges
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < numCols; i++) {
+            const v0 = j * numCols + i;
+            const v1 = v0 + numCols;
+            edgesList.push(v0, v1);
+        }
+    }
+
+    // Diagonal (shear) edges
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const topLeft = j * numCols + i;
+            const topRight = topLeft + 1;
+            const bottomLeft = topLeft + numCols;
+            const bottomRight = bottomLeft + 1;
+            edgesList.push(topLeft, bottomRight); // \
+            edgesList.push(topRight, bottomLeft); // /
+        }
+    }
+
+    // Convert edgesList to Uint16Array
+    const edges = new Uint32Array(edgesList);
+
+    // Create stiffness array: one stiffness per edge
+    const stiffnesses = new Float32Array(edges.length / 2);
+    stiffnesses.fill(stiffness);
+
+    // Create mass array: one mass per vertex
+    const masses = new Float32Array(totalVertices);
+    masses.fill(mass);
+
+    // fixedVertices: Uint8Array, default 0 (movable)
+    const fixedVertices = new Uint8Array(totalVertices);
+    // Fix corners
+    fixedVertices[0] = 1;
+    fixedVertices[resolutionX] = 1;
+    fixedVertices[totalVertices - 1] = 1;
+    fixedVertices[totalVertices - numCols] = 1;
+
+    return {
+        pos,
+        masses,
+        fixedVertices,
+        edges,
+        stiffnesses
+    };
+}
+
 export function createTwoCloths(): Geometry {
     const width = 10;
     const height = 10;

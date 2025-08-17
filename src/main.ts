@@ -3,7 +3,7 @@ import {
   HemisphericLight, MeshBuilder, Mesh
 } from "@babylonjs/core";
 
-import { createCloth, createChain, createHighStiffnessRatioChain, createTwoCloths } from "./geometry";
+import { createCloth, createChain, createHighStiffnessRatioChain, createFixedCloth, createTwoCloths } from "./geometry";
 import { Params } from "./params";
 import { ImplicitSolver } from "./implicit";
 import { VBDSolver } from "./vbd";
@@ -36,6 +36,7 @@ function createGeometryFromUI() {
   switch (geometryType) {
     case "cloth": return createCloth(5, 5, 10, 10, 1000, 1.0);
     case "chain": return createChain(5, 10, 1000, 1.0);
+    case "fixed cloth": return createFixedCloth(5, 5, 10, 10, 1000, 1.0);
     case "two cloths": return createTwoCloths();
     case "highStiffnessRatioChain": return createHighStiffnessRatioChain();
     default: return createCloth(5, 5, 10, 10, 1000, 1.0);
