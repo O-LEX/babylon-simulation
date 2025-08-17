@@ -54,6 +54,17 @@ class Vector {
     }
 }
 
+// Debug helper function
+function checkForNaN(arr: number[], name: string): boolean {
+    for (let i = 0; i < arr.length; i++) {
+        if (!isFinite(arr[i])) {
+            console.error(`NaN/Infinity detected in ${name}[${i}]: ${arr[i]}`);
+            return true;
+        }
+    }
+    return false;
+}
+
 export function limitedMemoryBFGS(optimizable: Optimizable, parameters: number[]): boolean {
     const lbfgsStart = Date.now();
 
@@ -66,26 +77,75 @@ export function limitedMemoryBFGS(optimizable: Optimizable, parameters: number[]
 
     const numParameters = parameters.length;
 
+    console.log("Initial parameters:", parameters.slice(0, 5), "...");
+    
+    // Check initial parameters
+    if (checkForNaN(parameters, "initial parameters")) {
+        console.error("Initial parameters contain NaN/Infinity");
+        return false;
+    }
+
     let gradient = Vector.rep([numParameters], 0.0);
-    optimizable.getGradient(parameters, gradient);
+    
+    // Get initial gradient and check for NaN
+    try {
+        optimizable.getGradient(parameters, gradient);
+        console.log("Initial gradient:", gradient.slice(0, 5), "...");
+        if (checkForNaN(gradient, "initial gradient")) {
+            console.error("Initial gradient contains NaN/Infinity");
+            return false;
+        }
+    } catch (error) {
+        console.error("Error in getGradient:", error);
+        return false;
+    }
+
     let oldGradient = Vector.clone(gradient);
     let oldParameters = Vector.clone(parameters);
 
     let direction = Vector.clone(gradient);
 
     // Project direction to the l2 ball
-    Vector.diveq(direction, Vector.norm2(direction));
+    const directionNorm = Vector.norm2(direction);
+    console.log("Direction norm:", directionNorm);
+    if (directionNorm === 0) {
+        console.error("Direction norm is zero - cannot normalize");
+        return false;
+    }
+    Vector.diveq(direction, directionNorm);
 
     const parameterChangeBuffer: number[][] = []; // "s"
     const gradientChangeBuffer: number[][] = []; // "y"
     const scaleBuffer: number[] = []; // "rho"
 
     // Initial step, do a line search in the direction of the gradient
+    console.log("Starting line search with direction:", direction.slice(0, 5), "...");
     let scale = backtrackingLineSearch(optimizable, direction, gradient, parameters);
+    console.log("Line search returned scale:", scale);
 
     // "parameters" has now been updated, so get a new value and gradient
-    let value = optimizable.getValue(parameters);
-    gradient = optimizable.getGradient(parameters, gradient);
+    let value;
+    try {
+        value = optimizable.getValue(parameters);
+        console.log("Initial value after line search:", value);
+        if (!isFinite(value)) {
+            console.error("getValue returned NaN/Infinity:", value);
+            return false;
+        }
+    } catch (error) {
+        console.error("Error in getValue:", error);
+        return false;
+    }
+    
+    try {
+        gradient = optimizable.getGradient(parameters, gradient);
+        if (checkForNaN(gradient, "gradient after line search")) {
+            return false;
+        }
+    } catch (error) {
+        console.error("Error in getGradient after line search:", error);
+        return false;
+    }
 
     let oldValue = value;
 
@@ -96,7 +156,21 @@ export function limitedMemoryBFGS(optimizable: Optimizable, parameters: number[]
     for (let iteration = 0; iteration < maxIterations; iteration++) {
         const start = Date.now();
 
-        console.log(`Beginning L-BFGS iteration, v=${value} ||g||=${Vector.norm2(gradient)}`);
+        const currentGradientNorm = Vector.norm2(gradient);
+        console.log(`Beginning L-BFGS iteration ${iteration}, v=${value} ||g||=${currentGradientNorm}`);
+        
+        // Check for NaN in iteration
+        if (!isFinite(value)) {
+            console.error(`Value is NaN/Infinity at iteration ${iteration}: ${value}`);
+            return false;
+        }
+        if (!isFinite(currentGradientNorm)) {
+            console.error(`Gradient norm is NaN/Infinity at iteration ${iteration}: ${currentGradientNorm}`);
+            return false;
+        }
+        if (checkForNaN(parameters, `parameters at iteration ${iteration}`)) {
+            return false;
+        }
 
         // Update the buffers with diffs
         if (parameterChangeBuffer.length < memorySize) {
@@ -226,7 +300,19 @@ function backtrackingLineSearch(
     let scale = 1.0;
     let newScale = 0.0;
 
-    const originalValue = optimizable.getValue(parameters);
+    let originalValue;
+    try {
+        originalValue = optimizable.getValue(parameters);
+        console.log("Line search - original value:", originalValue);
+        if (!isFinite(originalValue)) {
+            console.error("Line search - original value is NaN/Infinity:", originalValue);
+            return 0.0;
+        }
+    } catch (error) {
+        console.error("Line search - error in getValue:", error);
+        return 0.0;
+    }
+    
     let oldValue = originalValue;
 
     // Make sure the initial step size isn't too big
@@ -262,12 +348,21 @@ function backtrackingLineSearch(
             return 0.0;
         }
 
-        const value = optimizable.getValue(parameters);
+        let value;
+        try {
+            value = optimizable.getValue(parameters);
+            console.log(`Line search iteration ${iteration}: scale=${scale}, value=${value}`);
+        } catch (error) {
+            console.error(`Line search - error in getValue at iteration ${iteration}:`, error);
+            return 0.0;
+        }
 
-        if (value >= originalValue + DECREASE_FRACTION * scale * slope) {
-            return scale;
-        } else if (!isFinite(value)) {
+        if (!isFinite(value)) {
+            console.log(`Line search - value is NaN/Infinity: ${value}`);
             newScale = 0.2 * scale;
+        } else if (value >= originalValue + DECREASE_FRACTION * scale * slope) {
+            console.log(`Line search converged at iteration ${iteration}`);
+            return scale;
         } else {
             if (scale === 1.0) {
                 // This is only true if this is the first iteration (?)
