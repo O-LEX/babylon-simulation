@@ -10,6 +10,8 @@ import { VBDSolver } from "./vbd";
 import { XPBDSolver } from "./xpbd";
 import { AVBDSolver } from "./avbd";
 import { ADMMSolver } from "./admm";
+import { runAllLBFGSExamples } from "./lbfgs-example";
+import { run } from "node:test";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
@@ -147,6 +149,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
 
 // Main entry point
 function main() {
+  runAllLBFGSExamples(); // Run L-BFGS examples on startup
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   const engine = new Engine(canvas, true);
   let scene = createScene(engine, canvas);

@@ -2,7 +2,9 @@ import { Vector3 } from "@babylonjs/core";
 import { Triplet, SparseMatrix, CholeskySolver } from "./math/util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
-import { sign } from "crypto";
+import * as PT from "./math/PointTriangleDistance";
+import { IPCOptimizable } from "./math/ipc";
+import { limitedMemoryBFGS, QuadraticOptimizable, RidgeRegression } from './math/lbfgs';
 
 interface EnergyTerm {
     offset: number;
@@ -159,60 +161,21 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         const y1 = p1.add(u1);
         const y2 = p2.add(u2);
 
-        const v10 = y1.subtract(y0);
-        const v21 = y2.subtract(y1);
-        const v02 = y0.subtract(y2);
+        const d2 = PT.val(y0, y1, y2);
+        const r2 = this.r * this.r;
 
-        const nor = Vector3.Cross(v10, v02);
-
-        const s0 = Math.sign(Vector3.Dot(Vector3.Cross(v10, nor), y0));
-        const s1 = Math.sign(Vector3.Dot(Vector3.Cross(v21, nor), y1));
-        const s2 = Math.sign(Vector3.Dot(Vector3.Cross(v02, nor), y2));
-
-        let dist2: number;
-        let bary: [number, number, number];
-
-        if (s0 + s1 + s2 >= 2) {
-            dist2 = Vector3.Dot(nor, y0) ** 2 / nor.lengthSquared();
-            const areaABC = nor.length();
-            const w0 = Vector3.Cross(y1, y2).length() / areaABC;
-            const w1 = Vector3.Cross(y2, y0).length() / areaABC;
-            const w2 = 1 - w0 - w1;
-            bary = [w0, w1, w2];
-        } else {
-            const edgeDist2 = (e: Vector3, y: Vector3): {d2: number, t: number} => {
-                const t = Math.max(0, Math.min(1, Vector3.Dot(e, y) / e.lengthSquared()));
-                const proj = e.scale(t).subtract(y);
-                return { d2: proj.lengthSquared(), t };
-            };
-
-            const d0 = edgeDist2(v10, y0);
-            const d1 = edgeDist2(v21, y1);
-            const d2 = edgeDist2(v02, y2);
-
-            if (d0.d2 <= d1.d2 && d0.d2 <= d2.d2) {
-                dist2 = d0.d2;
-                bary = [1 - d0.t, d0.t, 0];
-            } else if (d1.d2 <= d0.d2 && d1.d2 <= d2.d2) {
-                dist2 = d1.d2;
-                bary = [0, 1 - d1.t, d1.t];
-            } else {
-                dist2 = d2.d2;
-                bary = [d2.t, 0, 1 - d2.t];
-            }
-        }
-
-        const d = Math.sqrt(dist2);
-
+        let z0 = y0;
+        let z1 = y1;
         let z2 = y2;
-        if (d < this.r/2) {
-            const target = (d + Math.sqrt(d * d + 4)) / 2.0;
-            z2.addInPlace(normal.scale((target - d) / d));
-        } else if (d < this.r) {
-            z2.addInPlace(normal.scale((this.r - d) / d));
-        } 
-        const z0 = y0;
-        const z1 = y1;
+        if (d2 < r2) {
+            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+            const parameters = [...y];
+            const ipc = new IPCOptimizable(this.r, y);
+            const converged = limitedMemoryBFGS(ipc, parameters);
+            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        }
         u0 = y0.subtract(z0);
         u1 = y1.subtract(z1);
         u2 = y2.subtract(z2);
