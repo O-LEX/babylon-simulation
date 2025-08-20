@@ -167,15 +167,109 @@ class IPCTriangleEnergyTerm implements EnergyTerm {
         let z0 = y0.clone();
         let z1 = y1.clone();
         let z2 = y2.clone();
-        // if (d2 < r2) {
-        //     const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
-        //     const parameters = [...y];
-        //     const ipc = new IPCOptimizable(this.r, y);
-        //     const converged = limitedMemoryBFGS(ipc, parameters);
-        //     z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
-        //     z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
-        //     z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
-        // }
+        if (d2 < r2) {
+            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+            const parameters = [...y];
+            const ipc = new IPCOptimizable(this.r, y);
+            const converged = limitedMemoryBFGS(ipc, parameters);
+            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        }
+        u0 = y0.subtract(z0);
+        u1 = y1.subtract(z1);
+        u2 = y2.subtract(z2);
+        z[this.offset + 0] = z0.x; z[this.offset + 1] = z0.y; z[this.offset + 2] = z0.z;
+        z[this.offset + 3] = z1.x; z[this.offset + 4] = z1.y; z[this.offset + 5] = z1.z;
+        z[this.offset + 6] = z2.x; z[this.offset + 7] = z2.y; z[this.offset + 8] = z2.z;
+        u[this.offset + 0] = u0.x; u[this.offset + 1] = u0.y; u[this.offset + 2] = u0.z;
+        u[this.offset + 3] = u1.x; u[this.offset + 4] = u1.y; u[this.offset + 5] = u1.z;
+        u[this.offset + 6] = u2.x; u[this.offset + 7] = u2.y; u[this.offset + 8] = u2.z;
+    }
+
+    getId(): number[] {
+        return [this.p_id, this.t_id0, this.t_id1, this.t_id2];
+    }
+
+    getD(): Triplet[] {
+        const D = [
+            [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        ];
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < 9; i++) {
+            for (let j = 0; j < 12; j++) {
+                triplets.push({ row: i, col: j, val: D[i][j] });
+            }
+        }
+        return triplets;
+    }
+
+    getW(): number[] {
+        const weight = Math.sqrt(this.stiffness);
+        return Array(9).fill(weight);
+    }
+}
+
+class IPCEdgeEnergyTerm implements EnergyTerm {
+    offset: number;
+    private stiffness: number;
+    private p_id: number;
+    private t_id0: number;
+    private t_id1: number;
+    private t_id2: number;
+    private r: number; // collision radius
+
+    constructor(offset:number, stiffness: number, p_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
+        this.offset = offset;
+        this.stiffness = stiffness;
+        this.p_id = p_id;
+        this.t_id0 = t_id0;
+        this.t_id1 = t_id1;
+        this.t_id2 = t_id2;
+        this.r = r;
+    }
+
+    update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
+        const p  = new Vector3(pos[this.p_id * 3], pos[this.p_id * 3 + 1], pos[this.p_id * 3 + 2]);
+        const t0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
+        const t1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
+        const t2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
+
+        const p0 = t0.subtract(p);
+        const p1 = t1.subtract(p);
+        const p2 = t2.subtract(p);
+
+        let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
+        let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
+        let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
+
+        const y0 = p0.add(u0); // Dix + ui
+        const y1 = p1.add(u1);
+        const y2 = p2.add(u2);
+
+        const d2 = PT.val(y0, y1, y2);
+        const r2 = this.r * this.r;
+
+        let z0 = y0.clone();
+        let z1 = y1.clone();
+        let z2 = y2.clone();
+        if (d2 < r2) {
+            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+            const parameters = [...y];
+            const ipc = new IPCOptimizable(this.r, y);
+            const converged = limitedMemoryBFGS(ipc, parameters);
+            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+        }
         u0 = y0.subtract(z0);
         u1 = y1.subtract(z1);
         u2 = y2.subtract(z2);
