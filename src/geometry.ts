@@ -263,7 +263,7 @@ export function createTwoCloths(
             const cos30 = Math.cos(Math.PI / 6);
             const sin30 = Math.sin(Math.PI / 6);
             pos[index] = x * cos30 - z * sin30;
-            pos[index + 1] = 8;
+            pos[index + 1] = 8 + 1 / (j + 1);
             pos[index + 2] = x * sin30 + z * cos30;
         }
     }

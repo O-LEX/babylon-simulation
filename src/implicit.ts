@@ -2,6 +2,7 @@ import { Vector3 } from "@babylonjs/core";
 import { Matrix3x3, BlockSparseMatrix } from "./math/util";
 import { Geometry } from "./geometry";
 import { Params } from "./params";
+import { Collision } from "./collision";
 
 function springEnergy(pos0: Vector3, pos1: Vector3, restLength: number, stiffness: number): number {
     const diff = pos1.subtract(pos0);
@@ -52,6 +53,8 @@ export class ImplicitSolver {
 
     params: Params;
 
+    triangles?: Uint32Array;
+
     constructor(geometry: Geometry, params: Params) {
         this.numVertices = geometry.pos.length / 3;
         this.pos = new Float32Array(geometry.pos);
@@ -79,6 +82,8 @@ export class ImplicitSolver {
         this.bsm = new BlockSparseMatrix();
         const structure = this.createSparseMatrixStructure();
         this.bsm.initialize(structure.row2idx, structure.idx2col);
+
+        this.triangles = geometry.triangles;
     }
 
     private createSparseMatrixStructure(): { row2idx: number[], idx2col: number[] } {
@@ -139,7 +144,7 @@ export class ImplicitSolver {
             }
         }
 
-        for (let itr = 0; itr < this.params.numIterations; itr++) {
+        for (let itr = 0; itr < this.params.numIterations; itr++){
             const gradient = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
             this.bsm.setZero();
             
@@ -181,14 +186,6 @@ export class ImplicitSolver {
                 totalEnergy += 0.5 * mass * invDt2 * Vector3.DistanceSquared(inertiaP, p);
             }
 
-            // Add gravity forces
-            // for (let i = 0; i < this.numVertices; i++) {
-            //     const mass = this.masses[i];
-            //     const p = this.getVector3(this.pos, i);
-            //     gradient[i].subtractInPlace(g.scale(mass));
-            //     totalEnergy -= mass * Vector3.Dot(g, p);
-            // }
-
             // Add mass matrix (mass_point / (timeStep * timeStep))
             for (let i = 0; i < this.numVertices; i++) {
                 const mass = this.masses[i];
@@ -210,22 +207,22 @@ export class ImplicitSolver {
 
             // Update positions
             for (let i = 0; i < this.numVertices; i++) {
-                // if (this.fixedVertices[i]) continue;
                 const p = this.getVector3(this.pos, i);
                 const d = delta[i]; // use alpha if needed
                 this.setVector3(this.pos, i, p.subtract(d));
             }
 
-            if (itr === this.params.numIterations - 1) console.log("Total energy:", totalEnergy);
-        }
-            
-        // Update velocities
-        for (let i = 0; i < this.numVertices; i++) {
-            if (this.fixedVertices[i]) continue;
-            const p = this.getVector3(this.pos, i);
-            const prevP = this.getVector3(this.prevPos, i);
-            const v = p.subtract(prevP).scale(invDt);
-            this.setVector3(this.vel, i, v);
+            if (this.triangles) {
+                Collision(this.pos, this.prevPos, this.triangles, this.fixedVertices);
+            }
+
+            for (let i = 0; i < this.numVertices; i++) {
+                if (this.fixedVertices[i]) continue;
+                const p = this.getVector3(this.pos, i);
+                const prevP = this.getVector3(this.prevPos, i);
+                const v = p.subtract(prevP).scale(invDt);
+                this.setVector3(this.vel, i, v);
+            }
         }
     }
 
