@@ -10,7 +10,6 @@ import { VBDSolver } from "./vbd";
 import { XPBDSolver } from "./xpbd";
 import { AVBDSolver } from "./avbd";
 import { ADMMSolver } from "./admm";
-import { runAllLBFGSExamples } from "./lbfgs-example";
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
@@ -52,7 +51,7 @@ function createSolverFromUI(geometry: any, params: Params) {
     case "avbd": return new AVBDSolver(geometry, params);
     case "xpbd": return new XPBDSolver(geometry, params);
     case "admm": return new ADMMSolver(geometry, params);
-    default: return new ImplicitSolver(geometry, params);
+    default: return new ADMMSolver(geometry, params);
   }
 }
 
@@ -149,7 +148,6 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
 
 // Main entry point
 function main() {
-  runAllLBFGSExamples(); // Run L-BFGS examples on startup
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   const engine = new Engine(canvas, true);
   let scene = createScene(engine, canvas);
