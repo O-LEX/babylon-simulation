@@ -1,6 +1,6 @@
 import { Vector3 } from "@babylonjs/core";
 
-export type Triangle3 = [Vector3, Vector3, Vector3];
+export type Triangle = [Vector3, Vector3, Vector3];
 
 function dot(a: Vector3, b: Vector3): number {
     return Vector3.Dot(a, b);
@@ -72,7 +72,7 @@ function swap_minmax(t1_: number, t2_: number, d0_: number, d2_: number, v0_: Ve
     return { t1, t2, d0_: dd0, d2_: dd2, v0_: vv0, v2_: vv2 };
 }
 
-function gen_t(N_: Vector3, tri_: Triangle3, D_: Vector3, d_: [number, number, number]): { t1: number, t2: number } | null {
+function gen_t(N_: Vector3, tri_: Triangle, D_: Vector3, d_: [number, number, number]): { t1: number, t2: number } | null {
     const e = 0.0;
     if (d_[0] <= e && d_[1] <= e && d_[2] <= e) return null;
     if (d_[0] >= -e && d_[1] >= -e && d_[2] >= -e) return null;
@@ -102,7 +102,7 @@ function line_intersection_on_same_plane(p1: Vector3, p2: Vector3, p3: Vector3, 
     return null;
 }
 
-function inside_triangle_on_same_plane(triangle: Triangle3, p: Vector3): boolean {
+function inside_triangle_on_same_plane(triangle: Triangle, p: Vector3): boolean {
     const ab = triangle[1].subtract(triangle[0]);
     const bp = p.subtract(triangle[1]);
     const bc = triangle[2].subtract(triangle[1]);
@@ -123,7 +123,9 @@ function find_intersection_point(N: Vector3, p0: Vector3, p: Vector3, line_dir: 
     return intersection_point;
 }
 
-export function udcf(triangle1: Triangle3, triangle2: Triangle3): { C: number, dC: Vector3 } {
+// Resolve triangle-triangle collision along the separating normal.
+// Return value: the post-resolution vertex positions of the two triangles.
+export function udcf(triangle1: Triangle, triangle2: Triangle): [Triangle, Triangle] {
     let N1 = cross(triangle1[1].subtract(triangle1[0]), triangle1[2].subtract(triangle1[0]));
     N1 = normalize(N1);
     const d1 = -dot(N1, triangle1[0]);
@@ -135,14 +137,27 @@ export function udcf(triangle1: Triangle3, triangle2: Triangle3): { C: number, d
     for (let i = 0; i < 3; i++) d_on_vertex[1][i] = dot(N1, triangle2[i]) + d1;
     let D = cross(N1, N2);
     const Dlen = norm(D);
-    if (Dlen === 0) return { C: 0, dC: new Vector3(0, 0, 0) };
+    // Parallel planes or degenerate direction: no unique line of intersection -> no resolution
+    if (Dlen === 0) return [
+        [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+        [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+    ];
     D = D.scale(1 / Dlen);
     const gt1 = gen_t(N2, triangle1, D, [d_on_vertex[0][0], d_on_vertex[0][1], d_on_vertex[0][2]]);
-    if (!gt1) return { C: 0, dC: new Vector3(0, 0, 0) };
+    if (!gt1) return [
+        [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+        [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+    ];
     const gt2 = gen_t(N1, triangle2, D, [d_on_vertex[1][0], d_on_vertex[1][1], d_on_vertex[1][2]]);
-    if (!gt2) return { C: 0, dC: new Vector3(0, 0, 0) };
-    if (!(gt1.t2 >= gt2.t1 && gt2.t2 >= gt1.t1)) return { C: 0, dC: new Vector3(0, 0, 0) };
-    const P: [Triangle3, Triangle3] = [
+    if (!gt2) return [
+        [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+        [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+    ];
+    if (!(gt1.t2 >= gt2.t1 && gt2.t2 >= gt1.t1)) return [
+        [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+        [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+    ];
+    const P: [Triangle, Triangle] = [
         [
             triangle1[0].subtract(N2.scale(dot(N2, triangle1[0].subtract(triangle2[0])))),
             triangle1[1].subtract(N2.scale(dot(N2, triangle1[1].subtract(triangle2[0])))),
@@ -206,21 +221,67 @@ export function udcf(triangle1: Triangle3, triangle2: Triangle3): { C: number, d
         const candidate = dot(N1, v) + d1;
         if (d_tri2 < -candidate) d_tri2 = -candidate;
     }
-    if (d_tri1 > 1.0e-7 && d_tri1 < d_tri2) return { C: d_tri1, dC: N2 };
-    if (d_tri2 > 1.0e-7 && d_tri2 < d_tri1) return { C: d_tri2, dC: N1 };
-    return { C: 0, dC: new Vector3(0, 0, 0) };
+    // Symmetric resolution: move both triangles by C/2 along a single separating normal.
+    // Choose the side with smaller penetration (C), and split the correction.
+    const eps = 1.0e-7;
+    const pen1 = d_tri1 > eps ? d_tri1 : 0.0;
+    const pen2 = d_tri2 > eps ? d_tri2 : 0.0;
+    if (pen1 === 0.0 && pen2 === 0.0) {
+        // No penetration
+        return [
+            [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+            [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+        ];
+    }
+    // Prefer the smaller positive penetration as C and use its corresponding normal.
+    if (pen1 > 0.0 && (pen1 <= pen2 || pen2 === 0.0)) {
+        const correction = N2.scale(pen1 * 0.5);
+        const tri1Resolved: Triangle = [
+            triangle1[0].add(correction),
+            triangle1[1].add(correction),
+            triangle1[2].add(correction),
+        ];
+        const tri2Resolved: Triangle = [
+            triangle2[0].subtract(correction),
+            triangle2[1].subtract(correction),
+            triangle2[2].subtract(correction),
+        ];
+        return [tri1Resolved, tri2Resolved];
+    }
+    if (pen2 > 0.0) {
+        const correction = N1.scale(pen2 * 0.5);
+        const tri1Resolved: Triangle = [
+            triangle1[0].subtract(correction),
+            triangle1[1].subtract(correction),
+            triangle1[2].subtract(correction),
+        ];
+        const tri2Resolved: Triangle = [
+            triangle2[0].add(correction),
+            triangle2[1].add(correction),
+            triangle2[2].add(correction),
+        ];
+        return [tri1Resolved, tri2Resolved];
+    }
+    // Fallback (should not reach here given the checks above).
+    return [
+        [triangle1[0].clone(), triangle1[1].clone(), triangle1[2].clone()],
+        [triangle2[0].clone(), triangle2[1].clone(), triangle2[2].clone()],
+    ];
 }
 
-export function test(): { C: number, dC: Vector3 } {
-    const triangle1: Triangle3 = [
+export function test(): [Triangle, Triangle] {
+    const triangle1: Triangle = [
         new Vector3(0.375003, 0.299691, 0.299992),
         new Vector3(-0.224997, 0.299691, -0.300008),
         new Vector3(-0.224998, 0.299691, 0.299994),
     ];
-    const triangle2: Triangle3 = [
+    const triangle2: Triangle = [
         new Vector3(-0.0749846, 0.26, 0.0999057),
         new Vector3(0.125025, 0.26, 0.0999057),
         new Vector3(-0.1750912, 0.36939, 0.0999057),
     ];
-    return udcf(triangle1, triangle2);
+    const [resolvedT1, resolvedT2] = udcf(triangle1, triangle2);
+    console.log("resolvedT1:", resolvedT1);
+    console.log("resolvedT2:", resolvedT2);
+    return [resolvedT1, resolvedT2];
 }

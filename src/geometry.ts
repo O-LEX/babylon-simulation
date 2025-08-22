@@ -34,8 +34,9 @@ export function createCloth(
         }
     }
 
-    // Build edges: horizontal, vertical, diagonal (shear)
+    // Build edges: horizontal, vertical, diagonal (shear) and triangles
     const edgesList: number[] = [];
+    const trianglesList: number[] = [];
 
     // Horizontal edges
     for (let j = 0; j < numRows; j++) {
@@ -55,20 +56,27 @@ export function createCloth(
         }
     }
 
-    // Diagonal (shear) edges
+    // Diagonal (shear) edges and triangles per quad cell
     for (let j = 0; j < resolutionY; j++) {
         for (let i = 0; i < resolutionX; i++) {
-            const topLeft = j * numCols + i;
-            const topRight = topLeft + 1;
-            const bottomLeft = topLeft + numCols;
-            const bottomRight = bottomLeft + 1;
-            edgesList.push(topLeft, bottomRight); // \
-            edgesList.push(topRight, bottomLeft); // /
+            const v0 = j * numCols + i;           // top-left
+            const v1 = v0 + 1;                    // top-right
+            const v2 = v0 + numCols;              // bottom-left
+            const v3 = v2 + 1;                    // bottom-right
+
+            // shear edges
+            edgesList.push(v0, v3); // \
+            edgesList.push(v1, v2); // /
+
+            // triangles (same winding as createTwoCloths)
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
         }
     }
 
-    // Convert edgesList to Uint16Array
+    // Convert edgesList to Uint32Array
     const edges = new Uint32Array(edgesList);
+    const triangles = new Uint32Array(trianglesList);
 
     // Create stiffness array: one stiffness per edge
     const stiffnesses = new Float32Array(edges.length / 2);
@@ -89,7 +97,8 @@ export function createCloth(
         masses,
         fixedVertices,
         edges,
-        stiffnesses
+        stiffnesses,
+        triangles
     };
 }
 
@@ -219,13 +228,16 @@ export function createFixedCloth(
     };
 }
 
-export function createTwoCloths(): Geometry {
-    const width = 10;
-    const height = 10;
-    const resolutionX = 3;
-    const resolutionY = 3;
-    const stiffness = 10000;
-    const mass = 1.0;
+export function createTwoCloths(
+    width1: number = 10,
+    height1: number = 10,
+    width2: number = 6,
+    height2: number = 6,
+    resolutionX: number = 3,
+    resolutionY: number = 3,
+    stiffness: number = 100,
+    mass: number = 1.0
+): Geometry {
 
     const numCols = resolutionX + 1;
     const numRows = resolutionY + 1;
@@ -237,17 +249,17 @@ export function createTwoCloths(): Geometry {
     for (let j = 0; j < numRows; j++) {
         for (let i = 0; i < numCols; i++) {
             const index = (j * numCols + i) * 3;
-            pos[index] = (i / resolutionX) * width - width / 2;
+            pos[index] = (i / resolutionX) * width1 - width1 / 2;
             pos[index + 1] = 5;
-            pos[index + 2] = (j / resolutionY) * height - height / 2;
+            pos[index + 2] = (j / resolutionY) * height1 - height1 / 2;
         }
     }
 
     for (let j = 0; j < numRows; j++) {
         for (let i = 0; i < numCols; i++) {
             const index = (verticesPerCloth + j * numCols + i) * 3;
-            const x = (i / resolutionX) * width - width / 2;
-            const z = (j / resolutionY) * height - height / 2;
+            const x = (i / resolutionX) * width2 - width2 / 2;
+            const z = (j / resolutionY) * height2 - height2 / 2;
             const cos30 = Math.cos(Math.PI / 6);
             const sin30 = Math.sin(Math.PI / 6);
             pos[index] = x * cos30 - z * sin30;

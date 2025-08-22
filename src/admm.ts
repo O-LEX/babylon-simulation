@@ -4,13 +4,13 @@ import { Geometry } from "./geometry";
 import { Params } from "./params";
 import * as PT from "./math/PointTriangleDistance";
 import { IPCOptimizable } from "./math/ipc";
+import { udcf } from "./math/udcf";
 import { limitedMemoryBFGS } from './math/lbfgs';
 
 interface EnergyTerm {
     offset: number;
-    getId(): number[];
     getD(): Triplet[];
-    getW(): number[];
+    getW(): Triplet[];
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void;
 }
 
@@ -47,28 +47,35 @@ class SpringEnergyTerm implements EnergyTerm {
         u[this.offset + 2] = u_i.z;
     }
 
-    getId(): number[] {
-        return [this.id0, this.id1];
-    }
-
     getD(): Triplet[] {
         const D = [
             [-1, 0, 0, 1, 0, 0],
-            [0, -1, 0, 0, 1, 0],
-            [0, 0, -1, 0, 0, 1],
+            [ 0,-1, 0, 0, 1, 0],
+            [ 0, 0,-1, 0, 0, 1],
         ];
+        const x = [
+            this.id0 * 3, this.id0 * 3 + 1, this.id0 * 3 + 2,
+            this.id1 * 3, this.id1 * 3 + 1, this.id1 * 3 + 2
+        ];
+
         const triplets: Triplet[] = [];
         for (let i = 0; i < 3; i++) {
             for (let j = 0; j < 6; j++) {
-                triplets.push({ row: i, col: j, val: D[i][j] });
+                if (D[i][j] !== 0) {
+                    triplets.push({ row: this.offset + i, col: x[j], val: D[i][j] });
+                }
             }
         }
         return triplets;
     }
 
-    getW(): number[] {
+    getW(): Triplet[] {
         const weight = Math.sqrt(this.stiffness);
-        return [weight, weight, weight];
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < 3; i++) {
+            triplets.push({ row: this.offset + i, col: this.offset + i, val: weight });
+        }
+        return triplets;
     }
 }
 
@@ -99,170 +106,234 @@ class FixedEnergyTerm implements EnergyTerm {
         u[this.offset + 2] = u_i.z;
     }
 
-    getId(): number[] {
-        return [this.id];
-    }
-
     getD(): Triplet[] {
         const D = [
             [1, 0, 0],
             [0, 1, 0],
             [0, 0, 1],
         ];
+        const x = [this.id * 3, this.id * 3 + 1, this.id * 3 + 2];
         const triplets: Triplet[] = [];
         for (let i = 0; i < 3; i++) {
             for (let j = 0; j < 3; j++) {
-                triplets.push({ row: i, col: j, val: D[i][j] });
+                if (D[i][j] !== 0) {
+                    triplets.push({ row: this.offset + i, col: x[j], val: D[i][j] });
+                }
             }
         }
         return triplets;
     }
 
-    getW(): number[] {
+    getW(): Triplet[] {
         const weight = this.stiffness;
-        return [weight, weight, weight];
-    }
-}
-
-class IPCTriangleEnergyTerm implements EnergyTerm {
-    offset: number;
-    private stiffness: number;
-    private p_id: number;
-    private t_id0: number;
-    private t_id1: number;
-    private t_id2: number;
-    private r: number; // collision radius
-
-    constructor(offset:number, stiffness: number, p_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
-        this.offset = offset;
-        this.stiffness = stiffness;
-        this.p_id = p_id;
-        this.t_id0 = t_id0;
-        this.t_id1 = t_id1;
-        this.t_id2 = t_id2;
-        this.r = r;
-    }
-
-    update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
-        const p  = new Vector3(pos[this.p_id * 3], pos[this.p_id * 3 + 1], pos[this.p_id * 3 + 2]);
-        const t0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
-        const t1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
-        const t2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
-
-        const p0 = t0.subtract(p);
-        const p1 = t1.subtract(p);
-        const p2 = t2.subtract(p);
-
-        let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
-        let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
-        let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
-
-        const y0 = p0.add(u0); // Dix + ui
-        const y1 = p1.add(u1);
-        const y2 = p2.add(u2);
-
-        const d2 = PT.val(y0, y1, y2);
-        const r2 = this.r * this.r;
-
-        let z0 = y0.clone();
-        let z1 = y1.clone();
-        let z2 = y2.clone();
-        if (d2 < r2) {
-            const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
-            const parameters = [...y];
-            const ipc = new IPCOptimizable(this.r, y);
-            const converged = limitedMemoryBFGS(ipc, parameters);
-            z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
-            z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
-            z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
-        }
-        u0 = y0.subtract(z0);
-        u1 = y1.subtract(z1);
-        u2 = y2.subtract(z2);
-        z[this.offset + 0] = z0.x; z[this.offset + 1] = z0.y; z[this.offset + 2] = z0.z;
-        z[this.offset + 3] = z1.x; z[this.offset + 4] = z1.y; z[this.offset + 5] = z1.z;
-        z[this.offset + 6] = z2.x; z[this.offset + 7] = z2.y; z[this.offset + 8] = z2.z;
-        u[this.offset + 0] = u0.x; u[this.offset + 1] = u0.y; u[this.offset + 2] = u0.z;
-        u[this.offset + 3] = u1.x; u[this.offset + 4] = u1.y; u[this.offset + 5] = u1.z;
-        u[this.offset + 6] = u2.x; u[this.offset + 7] = u2.y; u[this.offset + 8] = u2.z;
-    }
-
-    getId(): number[] {
-        return [this.p_id, this.t_id0, this.t_id1, this.t_id2];
-    }
-
-    getD(): Triplet[] {
-        const D = [
-            [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-            [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-            [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-            [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-            [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-            [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        ];
         const triplets: Triplet[] = [];
-        for (let i = 0; i < 9; i++) {
-            for (let j = 0; j < 12; j++) {
-                triplets.push({ row: i, col: j, val: D[i][j] });
-            }
+        for (let i = 0; i < 3; i++) {
+            triplets.push({ row: this.offset + i, col: this.offset + i, val: weight });
         }
         return triplets;
     }
-
-    getW(): number[] {
-        const weight = Math.sqrt(this.stiffness);
-        return Array(9).fill(weight);
-    }
 }
+
+// class IPCTriangleEnergyTerm implements EnergyTerm {
+//     offset: number;
+//     private stiffness: number;
+//     private p_id: number;
+//     private t_id0: number;
+//     private t_id1: number;
+//     private t_id2: number;
+//     private r: number; // collision radius
+
+//     constructor(offset:number, stiffness: number, p_id: number, t_id0: number, t_id1: number, t_id2: number, r: number) {
+//         this.offset = offset;
+//         this.stiffness = stiffness;
+//         this.p_id = p_id;
+//         this.t_id0 = t_id0;
+//         this.t_id1 = t_id1;
+//         this.t_id2 = t_id2;
+//         this.r = r;
+//     }
+
+//     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
+//         const p  = new Vector3(pos[this.p_id * 3], pos[this.p_id * 3 + 1], pos[this.p_id * 3 + 2]);
+//         const t0   = new Vector3(pos[this.t_id0 * 3], pos[this.t_id0 * 3 + 1], pos[this.t_id0 * 3 + 2]);
+//         const t1  = new Vector3(pos[this.t_id1 * 3], pos[this.t_id1 * 3 + 1], pos[this.t_id1 * 3 + 2]);
+//         const t2  = new Vector3(pos[this.t_id2 * 3], pos[this.t_id2 * 3 + 1], pos[this.t_id2 * 3 + 2]);
+
+//         const p0 = t0.subtract(p);
+//         const p1 = t1.subtract(p);
+//         const p2 = t2.subtract(p);
+
+//         let u0  = new Vector3(u[this.offset + 0], u[this.offset + 1], u[this.offset + 2]);
+//         let u1 = new Vector3(u[this.offset + 3], u[this.offset + 4], u[this.offset + 5]);
+//         let u2 = new Vector3(u[this.offset + 6], u[this.offset + 7], u[this.offset + 8]);
+
+//         const y0 = p0.add(u0); // Dix + ui
+//         const y1 = p1.add(u1);
+//         const y2 = p2.add(u2);
+
+//         const d2 = PT.val(y0, y1, y2);
+//         const r2 = this.r * this.r;
+
+//         let z0 = y0.clone();
+//         let z1 = y1.clone();
+//         let z2 = y2.clone();
+//         if (d2 < r2) {
+//             const y = [y0.x, y0.y, y0.z, y1.x, y1.y, y1.z, y2.x, y2.y, y2.z];
+//             const parameters = [...y];
+//             const ipc = new IPCOptimizable(this.r, y);
+//             const converged = limitedMemoryBFGS(ipc, parameters);
+//             z0 = new Vector3(parameters[0], parameters[1], parameters[2]);
+//             z1 = new Vector3(parameters[3], parameters[4], parameters[5]);
+//             z2 = new Vector3(parameters[6], parameters[7], parameters[8]);
+//         }
+//         u0 = y0.subtract(z0);
+//         u1 = y1.subtract(z1);
+//         u2 = y2.subtract(z2);
+//         z[this.offset + 0] = z0.x; z[this.offset + 1] = z0.y; z[this.offset + 2] = z0.z;
+//         z[this.offset + 3] = z1.x; z[this.offset + 4] = z1.y; z[this.offset + 5] = z1.z;
+//         z[this.offset + 6] = z2.x; z[this.offset + 7] = z2.y; z[this.offset + 8] = z2.z;
+//         u[this.offset + 0] = u0.x; u[this.offset + 1] = u0.y; u[this.offset + 2] = u0.z;
+//         u[this.offset + 3] = u1.x; u[this.offset + 4] = u1.y; u[this.offset + 5] = u1.z;
+//         u[this.offset + 6] = u2.x; u[this.offset + 7] = u2.y; u[this.offset + 8] = u2.z;
+//     }
+
+//     getId(): number[] {
+//         return [this.p_id, this.t_id0, this.t_id1, this.t_id2];
+//     }
+
+//     getD(): Triplet[] {
+//         const D = [
+//             [-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+//             [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+//             [0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+//             [-1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+//             [0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+//             [0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+//             [-1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+//             [0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+//             [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+//         ];
+//         const triplets: Triplet[] = [];
+//         for (let i = 0; i < 9; i++) {
+//             for (let j = 0; j < 12; j++) {
+//                 triplets.push({ row: i, col: j, val: D[i][j] });
+//             }
+//         }
+//         return triplets;
+//     }
+
+//     getW(): number[] {
+//         const weight = Math.sqrt(this.stiffness);
+//         return Array(9).fill(weight);
+//     }
+// }
 
 class CollisionEnergyTerm implements EnergyTerm {
     offset: number;
     stiffness: number;
     numVertices: number;
-    ids: number[];
     triangles: Uint32Array;
+    refPos: Float32Array;
+    numTriangles: number;
 
-    constructor(offset: number, stiffness: number, numVertices: number, triangles: Uint32Array) {
+    constructor(offset: number, stiffness: number, numVertices: number, triangles: Uint32Array, refPos: Float32Array) {
         this.offset = offset;
         this.stiffness = stiffness;
         this.numVertices = numVertices;
-        this.ids = Array.from({ length: numVertices }, (_, i) => i);
         this.triangles = triangles;
+        this.refPos = refPos;
+    this.numTriangles = Math.floor(this.triangles.length / 3);
     }
+
 
     update(pos: Float32Array, z: Float32Array, u: Float32Array): void {
         const n = this.numVertices;
         const y = new Float32Array(n * 3);
-        for (let i = 0; i < n; i++) {
-            const gid = this.ids[i];
-            const g = gid * 3;
-            const l = this.offset + i * 3;
-            const yi = i * 3;
-            y[yi] = pos[g] + u[l];
-            y[yi + 1] = pos[g + 1] + u[l + 1];
-            y[yi + 2] = pos[g + 2] + u[l + 2];
+        for (let i = 0; i < n * 3; i++) {
+            y[i] = pos[i] + u[this.offset + i];
+        }
+        // temp buffer to accumulate resolved positions across pairs (single pass)
+        const zLocal = new Float32Array(y);
+        for (let itr = 0; itr < 5; itr++) {
+            for (let i = 0; i < this.numTriangles; i++) {
+                for (let j = i + 1; j < this.numTriangles; j++) {
+                    const p_id0 = this.triangles[i * 3];
+                    const p_id1 = this.triangles[i * 3 + 1];
+                    const p_id2 = this.triangles[i * 3 + 2];
+                    const q_id0 = this.triangles[j * 3];
+                    const q_id1 = this.triangles[j * 3 + 1];
+                    const q_id2 = this.triangles[j * 3 + 2];
+
+                    // Use reference shape to decide orientation flip
+                    const ref_p0 = new Vector3(this.refPos[p_id0 * 3], this.refPos[p_id0 * 3 + 1], this.refPos[p_id0 * 3 + 2]);
+                    const ref_p1 = new Vector3(this.refPos[p_id1 * 3], this.refPos[p_id1 * 3 + 1], this.refPos[p_id1 * 3 + 2]);
+                    const ref_p2 = new Vector3(this.refPos[p_id2 * 3], this.refPos[p_id2 * 3 + 1], this.refPos[p_id2 * 3 + 2]);
+                    const np = Vector3.Cross(ref_p1.subtract(ref_p0), ref_p2.subtract(ref_p0));
+                    const cp = ref_p0.add(ref_p1).add(ref_p2).scale(1 / 3);
+                    const ref_q0 = new Vector3(this.refPos[q_id0 * 3], this.refPos[q_id0 * 3 + 1], this.refPos[q_id0 * 3 + 2]);
+                    const ref_q1 = new Vector3(this.refPos[q_id1 * 3], this.refPos[q_id1 * 3 + 1], this.refPos[q_id1 * 3 + 2]);
+                    const ref_q2 = new Vector3(this.refPos[q_id2 * 3], this.refPos[q_id2 * 3 + 1], this.refPos[q_id2 * 3 + 2]);
+                    const nq = Vector3.Cross(ref_q1.subtract(ref_q0), ref_q2.subtract(ref_q0));
+                    const cq = ref_q0.add(ref_q1).add(ref_q2).scale(1 / 3);
+                    const v = cq.subtract(cp);
+                    let a0 = p_id0, a1 = p_id1, a2 = p_id2;
+                    if (Vector3.Dot(np, v) < 0) {
+                        a1 = p_id2;
+                        a2 = p_id1;
+                    }
+                    let b0 = q_id0, b1 = q_id1, b2 = q_id2;
+                    if (Vector3.Dot(nq, v) > 0) {
+                        b1 = q_id2;
+                        b2 = q_id1;
+                    }
+
+                    // Build triangles from current local buffer
+                    const p0 = new Vector3(zLocal[a0 * 3], zLocal[a0 * 3 + 1], zLocal[a0 * 3 + 2]);
+                    const p1 = new Vector3(zLocal[a1 * 3], zLocal[a1 * 3 + 1], zLocal[a1 * 3 + 2]);
+                    const p2 = new Vector3(zLocal[a2 * 3], zLocal[a2 * 3 + 1], zLocal[a2 * 3 + 2]);
+                    const q0 = new Vector3(zLocal[b0 * 3], zLocal[b0 * 3 + 1], zLocal[b0 * 3 + 2]);
+                    const q1 = new Vector3(zLocal[b1 * 3], zLocal[b1 * 3 + 1], zLocal[b1 * 3 + 2]);
+                    const q2 = new Vector3(zLocal[b2 * 3], zLocal[b2 * 3 + 1], zLocal[b2 * 3 + 2]);
+
+                    const [resolvedP, resolvedQ] = udcf([p0, p1, p2], [q0, q1, q2]);
+
+                    const p_ids = [a0, a1, a2];
+                    for (let k = 0; k < 3; k++) {
+                        const id = p_ids[k] * 3;
+                        zLocal[id + 0] = resolvedP[k].x; zLocal[id + 1] = resolvedP[k].y; zLocal[id + 2] = resolvedP[k].z;
+                    }
+                    const q_ids = [b0, b1, b2];
+                    for (let k = 0; k < 3; k++) {
+                        const id = q_ids[k] * 3;
+                        zLocal[id + 0] = resolvedQ[k].x; zLocal[id + 1] = resolvedQ[k].y; zLocal[id + 2] = resolvedQ[k].z;
+                    }
+                }
+            }
+        }
+
+        // Finally, commit to z and update u = y - z for this term
+        for (let i = 0; i < n * 3; i++) {
+            const zi = zLocal[i];
+            z[this.offset + i] = zi;
+            u[this.offset + i] = y[i] - zi;
         }
     }
 
-    getId(): number[] {
-        return this.ids;
-    }
-
     getD(): Triplet[] {
-        const n = this.numVertices * 3;
         const triplets: Triplet[] = [];
-        for (let i = 0; i < n; i++) {
-            triplets.push({ row: i, col: i, val: 1 });
+        for (let i = 0; i < this.numVertices * 3; i++) {
+            triplets.push({ row: this.offset + i, col: i, val: 1 });
         }
         return triplets;
     }
 
-    getW(): number[] {
-        const weight = Math.sqrt(this.stiffness);
-        return Array(this.numVertices * 3).fill(weight);
+    getW(): Triplet[] {
+        const weight = this.stiffness;
+        const triplets: Triplet[] = [];
+        for (let i = 0; i < this.numVertices * 3; i++) {
+            triplets.push({ row: this.offset + i, col: this.offset + i, val: weight });
+        }
+        return triplets;
     }
 }
 
@@ -364,8 +435,8 @@ export class ADMMSolver {
         // collision 
         if (geometry.triangles) {
             const triangles = new Uint32Array(geometry.triangles);
-            const stiffness = 10000;
-            this.energyTerms.push(new CollisionEnergyTerm(offset, stiffness, this.numVertices, triangles));
+            const stiffness = 100;
+            this.energyTerms.push(new CollisionEnergyTerm(offset, stiffness, this.numVertices, triangles, this.prevPos));
             offset += 3 * this.numVertices;
         }
 
@@ -374,20 +445,11 @@ export class ADMMSolver {
         const W_triplets: Triplet[] = [];
 
         for (const term of this.energyTerms) {
-            const offset = term.offset;
-            const ids = term.getId();
             const triplets = term.getD();
             const weights = term.getW();
 
-            for (const t of triplets) {
-                const id = ids[Math.floor(t.col / 3)];
-                const globalCol = id * 3 + (t.col % 3);
-                D_triplets.push({ row: offset + t.row, col: globalCol, val: t.val });
-            }
-
-            for (let i = 0; i < weights.length; i++) {
-                W_triplets.push({ row: offset + i, col: offset + i, val: weights[i] });
-            }
+            D_triplets.push(...triplets);
+            W_triplets.push(...weights);
         }
 
 

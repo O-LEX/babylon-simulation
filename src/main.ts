@@ -10,6 +10,7 @@ import { VBDSolver } from "./vbd";
 import { XPBDSolver } from "./xpbd";
 import { AVBDSolver } from "./avbd";
 import { ADMMSolver } from "./admm";
+import { test } from "./math/udcf"; // Import the UDCF test function
 
 // Get simulation parameters from the UI
 function getParamsFromUI(): Params {
@@ -148,6 +149,7 @@ function createScene(engine: Engine, canvas: HTMLCanvasElement): Scene {
 
 // Main entry point
 function main() {
+  test(); // Run the UDCF test function
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   const engine = new Engine(canvas, true);
   let scene = createScene(engine, canvas);
