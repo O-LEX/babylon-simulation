@@ -328,6 +328,142 @@ export function createTwoCloths(
     };
 }
 
+export function createThreeCloths(
+    width1: number = 8,
+    height1: number = 4,
+    width2: number = 6,
+    height2: number = 6,
+    width3: number = 4,
+    height3: number = 8,
+    resolutionX: number = 3,
+    resolutionY: number = 3,
+    stiffness: number = 1000,
+    mass: number = 0.1
+): Geometry {
+
+    const numCols = resolutionX + 1;
+    const numRows = resolutionY + 1;
+    const verticesPerCloth = numCols * numRows;
+    const totalVertices = verticesPerCloth * 3;
+
+    const pos = new Float32Array(totalVertices * 3);
+
+    // First cloth - positioned at origin
+    for (let j = 0; j < numRows; j++) {
+        for (let i = 0; i < numCols; i++) {
+            const index = (j * numCols + i) * 3;
+            pos[index] = (i / resolutionX) * width1 - width1 / 2;
+            pos[index + 1] = 5;
+            pos[index + 2] = (j / resolutionY) * height1 - height1 / 2;
+        }
+    }
+
+    // Second cloth - rotated 30 degrees and elevated
+    for (let j = 0; j < numRows; j++) {
+        for (let i = 0; i < numCols; i++) {
+            const index = (verticesPerCloth + j * numCols + i) * 3;
+            const x = (i / resolutionX) * width2 - width2 / 2;
+            const z = (j / resolutionY) * height2 - height2 / 2;
+            const cos30 = Math.cos(Math.PI / 6);
+            const sin30 = Math.sin(Math.PI / 6);
+            pos[index] = x * cos30 - z * sin30;
+            pos[index + 1] = 8 + 1 / (j + 1);
+            pos[index + 2] = x * sin30 + z * cos30;
+        }
+    }
+
+    // Third cloth - rotated 60 degrees and higher elevation
+    for (let j = 0; j < numRows; j++) {
+        for (let i = 0; i < numCols; i++) {
+            const index = (2 * verticesPerCloth + j * numCols + i) * 3;
+            const x = (i / resolutionX) * width3 - width3 / 2;
+            const z = (j / resolutionY) * height3 - height3 / 2;
+            const cos60 = Math.cos(Math.PI / 3);
+            const sin60 = Math.sin(Math.PI / 3);
+            pos[index] = x * cos60 - z * sin60 + 2; // offset in x
+            pos[index + 1] = 11 + 2 / (j + 1);
+            pos[index + 2] = x * sin60 + z * cos60 + 1; // offset in z
+        }
+    }
+
+    const edgesList: number[] = [];
+    const trianglesList: number[] = [];
+
+    // Create edges and triangles for first cloth
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const v0 = j * numCols + i;
+            const v1 = v0 + 1;
+            const v2 = v0 + numCols;
+            const v3 = v2 + 1;
+
+            edgesList.push(v0, v1, v0, v2, v0, v3, v1, v2);
+            if (i === resolutionX - 1) edgesList.push(v1, v3);
+            if (j === resolutionY - 1) edgesList.push(v2, v3);
+            
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
+        }
+    }
+
+    // Create edges and triangles for second cloth
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const offset = verticesPerCloth;
+            const v0 = offset + j * numCols + i;
+            const v1 = v0 + 1;
+            const v2 = v0 + numCols;
+            const v3 = v2 + 1;
+            
+            edgesList.push(v0, v1, v0, v2, v0, v3, v1, v2);
+            if (i === resolutionX - 1) edgesList.push(v1, v3);
+            if (j === resolutionY - 1) edgesList.push(v2, v3);
+
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
+        }
+    }
+
+    // Create edges and triangles for third cloth
+    for (let j = 0; j < resolutionY; j++) {
+        for (let i = 0; i < resolutionX; i++) {
+            const offset = 2 * verticesPerCloth;
+            const v0 = offset + j * numCols + i;
+            const v1 = v0 + 1;
+            const v2 = v0 + numCols;
+            const v3 = v2 + 1;
+            
+            edgesList.push(v0, v1, v0, v2, v0, v3, v1, v2);
+            if (i === resolutionX - 1) edgesList.push(v1, v3);
+            if (j === resolutionY - 1) edgesList.push(v2, v3);
+
+            trianglesList.push(v0, v2, v1);
+            trianglesList.push(v1, v2, v3);
+        }
+    }
+
+    const edges = new Uint32Array(edgesList);
+    const triangles = new Uint32Array(trianglesList);
+    const stiffnesses = new Float32Array(edges.length / 2);
+    stiffnesses.fill(stiffness);
+
+    const masses = new Float32Array(totalVertices);
+    masses.fill(mass);
+
+    // No fixed vertices (all vertices are movable)
+    const fixedVertices = new Uint8Array(totalVertices);
+    // All vertices remain 0 (movable)
+
+    return {
+        pos,
+        masses,
+        fixedVertices,
+        edges,
+        stiffnesses,
+        triangles
+    };
+}
+
 export function createHighStiffnessRatioChain(): Geometry {
     const numVertices = 3;
     const pos = new Float32Array(numVertices * 3);
