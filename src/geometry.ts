@@ -235,8 +235,8 @@ export function createTwoCloths(
     height2: number = 6,
     resolutionX: number = 3,
     resolutionY: number = 3,
-    stiffness: number = 100,
-    mass: number = 1.0
+    stiffness: number = 1000,
+    mass: number = 0.1
 ): Geometry {
 
     const numCols = resolutionX + 1;

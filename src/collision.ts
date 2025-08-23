@@ -1,9 +1,8 @@
 import { Vector3 } from "@babylonjs/core";
 import { udcf } from "./math/udcf";
 
-export function Collision(pos: Float32Array, refPos: Float32Array, triangles: Uint32Array, fixedVertices: Uint8Array) {
+export function Collision(numItr: number, pos: Float32Array, refPos: Float32Array, triangles: Uint32Array, fixedVertices: Uint8Array) {
     const numTriangles = triangles.length / 3;
-    const numItr = 10;
 
     for (let itr = 0; itr < numItr; itr++) {
         for (let i = 0; i < numTriangles; i++) {

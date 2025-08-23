@@ -118,20 +118,18 @@ export class ImplicitSolver {
     }
 
     step(): void {
+        const dt = this.params.dt / this.params.numSubsteps;
+        const g = this.params.g;
         for (let step = 0; step < this.params.numSubsteps; step++) {
-            this.solve();
+            this.prevPos.set(this.pos);
+            this.updateInertiaPos(dt, g);
+            this.pos.set(this.inertiaPos); // warm start
+            this.solve(dt);
+            this.updateVel(dt);
         }
     }
 
-    solve(): void {
-        this.prevPos.set(this.pos);
-
-        const g = this.params.g;
-        const dt = this.params.dt / this.params.numSubsteps;
-        const invDt = 1 / dt;
-        const invDt2 = 1 / (dt * dt);
-
-        // Compute inertia positions and warm start
+    updateInertiaPos(dt: number, g: Vector3): void {
         for (let i = 0; i < this.numVertices; i++) {
             if (this.fixedVertices[i]) this.setVector3(this.inertiaPos, i, this.getVector3(this.pos, i));
             else {
@@ -140,9 +138,12 @@ export class ImplicitSolver {
                 v.addInPlace(g.scale(dt)); // Apply gravity
                 p.addInPlace(v.scale(dt));
                 this.setVector3(this.inertiaPos, i, p);
-                this.setVector3(this.pos, i, p);
             }
         }
+    }
+
+    solve(dt: number): void {
+        const invDt2 = 1 / (dt * dt);
 
         for (let itr = 0; itr < this.params.numIterations; itr++){
             const gradient = new Array(this.numVertices).fill(null).map(() => new Vector3(0, 0, 0));
@@ -213,11 +214,30 @@ export class ImplicitSolver {
             }
 
             if (this.triangles) {
-                Collision(this.pos, this.prevPos, this.triangles, this.fixedVertices);
+                Collision(4, this.pos, this.prevPos, this.triangles, this.fixedVertices);
             }
 
-            for (let i = 0; i < this.numVertices; i++) {
-                if (this.fixedVertices[i]) continue;
+            this.groundCollision();
+        }
+    }
+
+    groundCollision(): void {
+        for (let i = 0; i < this.numVertices; i++) {
+            const p = this.getVector3(this.pos, i);
+            if (p.y < 0) {
+                p.y = 0;
+                this.setVector3(this.pos, i, p);
+                this.setVector3(this.vel, i, new Vector3(0, 0, 0));
+            }
+        }
+    }
+
+    updateVel(dt: number): void {
+        const invDt = 1 / dt;
+        for (let i = 0; i < this.numVertices; i++) {
+            if (this.fixedVertices[i]) {
+                this.setVector3(this.vel, i, new Vector3(0, 0, 0));
+            } else {
                 const p = this.getVector3(this.pos, i);
                 const prevP = this.getVector3(this.prevPos, i);
                 const v = p.subtract(prevP).scale(invDt);
